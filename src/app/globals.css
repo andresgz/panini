@@ -42,6 +42,46 @@ button:disabled {
   min-height: 100vh;
 }
 
+.start-screen {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 20px;
+}
+
+.start-panel {
+  display: grid;
+  gap: 22px;
+  width: min(100%, 460px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 24px;
+}
+
+.start-brand {
+  align-items: flex-start;
+}
+
+.start-actions,
+.visitor-form {
+  display: grid;
+  gap: 10px;
+}
+
+.visitor-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.form-error {
+  color: var(--red);
+  font-size: 13px;
+}
+
 .topbar {
   position: sticky;
   top: 0;
@@ -295,6 +335,27 @@ button:disabled {
 .album-layout {
   display: grid;
   gap: 18px;
+}
+
+.album-tools {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px 14px;
+}
+
+.album-tools div {
+  display: grid;
+  gap: 3px;
+}
+
+.album-tools span {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .section-band {
@@ -711,6 +772,174 @@ button:disabled {
   text-align: center;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(23, 32, 25, 0.48);
+  padding: 20px;
+}
+
+.assistant-modal {
+  display: grid;
+  gap: 14px;
+  width: min(100%, 560px);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.assistant-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.assistant-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.assistant-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.assistant-group-nav {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(160px, 190px) minmax(180px, 240px);
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 8px;
+}
+
+.assistant-group-current {
+  display: flex;
+  min-width: 0;
+  gap: 10px;
+  align-items: center;
+}
+
+.assistant-section-image {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 29px;
+}
+
+.assistant-group-current div:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.assistant-group-current strong,
+.assistant-group-current span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-group-current span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.assistant-order-select,
+.assistant-group-select {
+  min-height: 34px;
+}
+
+.assistant-card {
+  display: grid;
+  gap: 10px;
+  min-height: 230px;
+  align-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 18px;
+  text-align: center;
+}
+
+.assistant-card.missing {
+  border-color: #e1c4c8;
+  background: #fbf3f4;
+}
+
+.assistant-card.owned {
+  border-color: #b7d4c4;
+  background: #f0f8f3;
+}
+
+.assistant-card.duplicate {
+  border-color: #dfc99a;
+  background: #fbf5e9;
+}
+
+.assistant-card strong {
+  font-size: 48px;
+  line-height: 1;
+}
+
+.assistant-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.assistant-sticker-details {
+  display: grid;
+  gap: 5px;
+  max-width: 360px;
+  margin: 0 auto;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: left;
+}
+
+.assistant-sticker-details span {
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.68);
+  padding: 6px 8px;
+}
+
+.assistant-card .badges {
+  justify-content: center;
+}
+
+.assistant-controls {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1fr;
+  gap: 8px;
+}
+
+.assistant-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.assistant-hints span {
+  border-radius: 999px;
+  background: var(--surface-2);
+  padding: 4px 8px;
+}
+
 @media (max-width: 1100px) {
   .topbar-inner,
   .toolbar {
@@ -720,6 +949,27 @@ button:disabled {
   .tabs,
   .user-area {
     overflow-x: auto;
+  }
+
+  .album-tools,
+  .assistant-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .assistant-group-nav {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .assistant-group-select {
+    grid-column: 1 / -1;
+  }
+
+  .assistant-order-select {
+    grid-column: 1 / -1;
+  }
+
+  .album-tools {
+    display: grid;
   }
 
   .sticker-grid {

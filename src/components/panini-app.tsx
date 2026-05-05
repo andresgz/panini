@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
 import {
   ArrowDownUp,
+  ArrowLeft,
+  ArrowRight,
   Check,
   ChevronDown,
   CircleMinus,
@@ -20,7 +22,6 @@ import {
   type LucideIcon
 } from "lucide-react";
 import { allStickers, paniniWorldCup2026Catalog } from "@/catalog/panini-world-cup-2026";
-import { demoStates, demoUsers } from "@/lib/demo-data";
 import {
   getDuplicateStickers,
   getFilteredStickers,
@@ -32,6 +33,7 @@ import {
   getUserProgress,
   normalizeQuantity
 } from "@/lib/inventory";
+import { getStickerContent, getStickerContentDescription, getStickerDisplayTitle } from "@/lib/sticker-content";
 import { createSupabaseClient, hasSupabaseConfig, signInWithGoogle, signOut } from "@/lib/supabase";
 import type { Sticker as StickerModel, StickerFilters, StickerType, User, UserStateMap } from "@/types/panini";
 
@@ -49,6 +51,13 @@ type TradeProcess = {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+};
+
+type AssistantGroup = {
+  id: string;
+  label: string;
+  image: string;
+  stickers: StickerModel[];
 };
 
 type InventoryBackup = {
@@ -90,6 +99,57 @@ const views: Array<{ id: View; label: string; icon: LucideIcon }> = [
   { id: "compare", label: "Cambios", icon: ArrowDownUp }
 ];
 
+const countryFlagByCode: Record<string, string> = {
+  MEX: "🇲🇽",
+  RSA: "🇿🇦",
+  KOR: "🇰🇷",
+  CZE: "🇨🇿",
+  CAN: "🇨🇦",
+  BIH: "🇧🇦",
+  QAT: "🇶🇦",
+  SUI: "🇨🇭",
+  BRA: "🇧🇷",
+  MAR: "🇲🇦",
+  HAI: "🇭🇹",
+  SCO: "🏴",
+  USA: "🇺🇸",
+  PAR: "🇵🇾",
+  AUS: "🇦🇺",
+  TUR: "🇹🇷",
+  GER: "🇩🇪",
+  CUW: "🇨🇼",
+  CIV: "🇨🇮",
+  ECU: "🇪🇨",
+  NED: "🇳🇱",
+  JPN: "🇯🇵",
+  SWE: "🇸🇪",
+  TUN: "🇹🇳",
+  BEL: "🇧🇪",
+  EGY: "🇪🇬",
+  IRN: "🇮🇷",
+  NZL: "🇳🇿",
+  ESP: "🇪🇸",
+  CPV: "🇨🇻",
+  KSA: "🇸🇦",
+  URU: "🇺🇾",
+  FRA: "🇫🇷",
+  SEN: "🇸🇳",
+  IRQ: "🇮🇶",
+  NOR: "🇳🇴",
+  ARG: "🇦🇷",
+  ALG: "🇩🇿",
+  AUT: "🇦🇹",
+  JOR: "🇯🇴",
+  POR: "🇵🇹",
+  COD: "🇨🇩",
+  UZB: "🇺🇿",
+  COL: "🇨🇴",
+  ENG: "🏴",
+  CRO: "🇭🇷",
+  GHA: "🇬🇭",
+  PAN: "🇵🇦"
+};
+
 function formatPercent(value: number) {
   return `${value.toFixed(1)}%`;
 }
@@ -99,6 +159,8 @@ function localStorageKey(userId: string) {
 }
 
 const tradeStorageKey = "panini-2026-trade-processes";
+const visitorProfileKey = "panini-2026-visitor-profile";
+const localVisitorUserId = "visitor-local";
 
 function readLocalState(userId: string) {
   if (typeof window === "undefined") return {};
@@ -132,18 +194,37 @@ function writeLocalTrades(trades: TradeProcess[]) {
   window.localStorage.setItem(tradeStorageKey, JSON.stringify(trades));
 }
 
+function readVisitorProfile() {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(visitorProfileKey);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as User;
+  } catch {
+    return null;
+  }
+}
+
+function writeVisitorProfile(user: User) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(visitorProfileKey, JSON.stringify(user));
+}
+
 export function PaniniApp() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [view, setView] = useState<View>("dashboard");
-  const [users, setUsers] = useState<User[]>(demoUsers);
-  const [currentUserId, setCurrentUserId] = useState(demoUsers[0].id);
-  const [compareUserId, setCompareUserId] = useState(demoUsers[1].id);
-  const [states, setStates] = useState<Record<string, UserStateMap>>(demoStates);
+  const [isAssistantOpen, setIsAssistantOpen] = useState(false);
+  const [assistantIndex, setAssistantIndex] = useState(0);
+  const [users, setUsers] = useState<User[]>([]);
+  const [currentUserId, setCurrentUserId] = useState("");
+  const [compareUserId, setCompareUserId] = useState("");
+  const [states, setStates] = useState<Record<string, UserStateMap>>({});
   const [filters, setFilters] = useState<StickerFilters>({});
-  const [isSupabaseReady, setIsSupabaseReady] = useState(false);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
+  const [isSessionLoaded, setIsSessionLoaded] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
 
-  const currentUser = users.find((user) => user.id === currentUserId) ?? users[0];
+  const currentUser = users.find((user) => user.id === currentUserId);
   const compareUser = users.find((user) => user.id === compareUserId && user.id !== currentUserId) ?? users.find((user) => user.id !== currentUserId);
   const currentState = useMemo(() => states[currentUser?.id ?? ""] ?? {}, [states, currentUser?.id]);
   const compareState = useMemo(() => (compareUser ? states[compareUser.id] ?? {} : {}), [states, compareUser]);
@@ -155,35 +236,56 @@ export function PaniniApp() {
   const progressByCountry = useMemo(() => getProgressByCountry(allStickers, currentState), [currentState]);
 
   useEffect(() => {
-    const supabase = createSupabaseClient();
-    setIsSupabaseReady(Boolean(supabase));
-
-    if (!supabase) return;
-
     let cancelled = false;
-    const client = supabase;
+    const supabase = createSupabaseClient();
 
-    async function load() {
-      const { data: sessionData } = await client.auth.getSession();
-      const authUser = sessionData.session?.user;
-      if (!authUser) return;
+    async function loadSession() {
+      if (supabase) {
+        const { data } = await supabase.auth.getSession();
+        const authUser = data.session?.user;
+        if (authUser) {
+          await loadAuthenticatedUser(authUser);
+          if (!cancelled) {
+            setIsAuthenticated(true);
+            setIsSessionLoaded(true);
+          }
+          return;
+        }
+      }
 
+      const visitor = readVisitorProfile();
+      if (visitor && !cancelled) {
+        setUsers([visitor]);
+        setCurrentUserId(visitor.id);
+        setStates({ [visitor.id]: readLocalState(visitor.id) });
+      }
+      if (!cancelled) setIsSessionLoaded(true);
+    }
+
+    async function loadAuthenticatedUser(authUser: {
+      id: string;
+      email?: string;
+      created_at?: string;
+      user_metadata: Record<string, unknown>;
+    }) {
       const profile: User = {
         id: authUser.id,
-        name: authUser.user_metadata.full_name ?? authUser.user_metadata.name ?? authUser.email?.split("@")[0] ?? "Coleccionista",
+        name:
+          String(authUser.user_metadata.full_name ?? authUser.user_metadata.name ?? authUser.email?.split("@")[0] ?? "Coleccionista"),
         email: authUser.email,
-        createdAt: authUser.created_at
+        createdAt: authUser.created_at ?? new Date().toISOString()
       };
 
-      await client.from("users").upsert({
+      if (!supabase) return;
+      await supabase.from("users").upsert({
         id: profile.id,
         name: profile.name,
         email: profile.email
       });
 
       const [{ data: userRows }, { data: stateRows }] = await Promise.all([
-        client.from("users").select("id,name,email,created_at").order("name"),
-        client.from("user_sticker_states").select("user_id,sticker_id,quantity,updated_at")
+        supabase.from("users").select("id,name,email,created_at").order("name"),
+        supabase.from("user_sticker_states").select("user_id,sticker_id,quantity,updated_at")
       ]);
 
       if (cancelled) return;
@@ -195,34 +297,77 @@ export function PaniniApp() {
           email: row.email ?? undefined,
           createdAt: row.created_at
         })) ?? [profile];
-
       const loadedStates = (stateRows ?? []).reduce<Record<string, UserStateMap>>((acc, row) => {
         acc[row.user_id] = acc[row.user_id] ?? {};
         acc[row.user_id][row.sticker_id] = row.quantity;
         return acc;
       }, {});
 
-      setUsers(loadedUsers.length > 0 ? loadedUsers : [profile]);
+      setUsers(loadedUsers);
       setCurrentUserId(profile.id);
-      setCompareUserId(loadedUsers.find((user) => user.id !== profile.id)?.id ?? profile.id);
+      setCompareUserId(loadedUsers.find((user) => user.id !== profile.id)?.id ?? "");
       setStates((previous) => ({ ...previous, ...loadedStates, [profile.id]: loadedStates[profile.id] ?? {} }));
     }
 
-    load();
+    loadSession();
+
+    const { data: listener } =
+      supabase?.auth.onAuthStateChange((_event, session) => {
+        if (!session?.user) return;
+        loadAuthenticatedUser(session.user).then(() => {
+          setIsAuthenticated(true);
+          setIsSessionLoaded(true);
+        });
+      }) ?? { data: { subscription: null } };
 
     return () => {
       cancelled = true;
+      listener.subscription?.unsubscribe();
     };
   }, []);
 
   useEffect(() => {
-    if (createSupabaseClient()) return;
-
+    if (!currentUserId) return;
     const saved = readLocalState(currentUserId);
-    if (Object.keys(saved).length > 0) {
-      setStates((previous) => ({ ...previous, [currentUserId]: saved }));
-    }
+    setStates((previous) => ({ ...previous, [currentUserId]: saved }));
   }, [currentUserId]);
+
+  function startVisitorSession(name: string) {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    const visitor: User = {
+      id: localVisitorUserId,
+      name: trimmedName,
+      createdAt: new Date().toISOString()
+    };
+    writeVisitorProfile(visitor);
+    setUsers([visitor]);
+    setCurrentUserId(visitor.id);
+    setCompareUserId("");
+    setStates({ [visitor.id]: readLocalState(visitor.id) });
+    setView("dashboard");
+  }
+
+  async function handleGoogleSignIn() {
+    const result = await signInWithGoogle();
+    if (result?.error) setBackupMessage(result.error.message);
+  }
+
+  async function handleSignOut() {
+    await signOut();
+    setIsAuthenticated(false);
+    setUsers([]);
+    setCurrentUserId("");
+    setCompareUserId("");
+    setStates({});
+    setView("dashboard");
+    const visitor = readVisitorProfile();
+    if (visitor) {
+      setUsers([visitor]);
+      setCurrentUserId(visitor.id);
+      setStates({ [visitor.id]: readLocalState(visitor.id) });
+    }
+  }
 
   async function updateQuantity(stickerId: string, quantity: number) {
     if (!currentUser) return;
@@ -235,14 +380,14 @@ export function PaniniApp() {
     });
 
     const supabase = createSupabaseClient();
-    if (!supabase) return;
-
-    await supabase.from("user_sticker_states").upsert({
-      user_id: currentUser.id,
-      sticker_id: stickerId,
-      quantity: nextQuantity,
-      updated_at: new Date().toISOString()
-    });
+    if (supabase && isAuthenticated) {
+      await supabase.from("user_sticker_states").upsert({
+        user_id: currentUser.id,
+        sticker_id: stickerId,
+        quantity: nextQuantity,
+        updated_at: new Date().toISOString()
+      });
+    }
   }
 
   async function updateQuantities(updates: Array<{ stickerId: string; quantity: number }>) {
@@ -262,17 +407,17 @@ export function PaniniApp() {
     });
 
     const supabase = createSupabaseClient();
-    if (!supabase) return;
-
-    const updatedAt = new Date().toISOString();
-    await supabase.from("user_sticker_states").upsert(
-      normalizedUpdates.map((update) => ({
-        user_id: currentUser.id,
-        sticker_id: update.stickerId,
-        quantity: update.quantity,
-        updated_at: updatedAt
-      }))
-    );
+    if (supabase && isAuthenticated) {
+      const updatedAt = new Date().toISOString();
+      await supabase.from("user_sticker_states").upsert(
+        normalizedUpdates.map((update) => ({
+          user_id: currentUser.id,
+          sticker_id: update.stickerId,
+          quantity: update.quantity,
+          updated_at: updatedAt
+        }))
+      );
+    }
   }
 
   async function updateUserQuantities(userId: string, updates: Array<{ stickerId: string; quantity: number }>) {
@@ -290,19 +435,6 @@ export function PaniniApp() {
       writeLocalState(userId, nextUserState);
       return { ...previous, [userId]: nextUserState };
     });
-
-    const supabase = createSupabaseClient();
-    if (!supabase || userId !== currentUser?.id) return;
-
-    const updatedAt = new Date().toISOString();
-    await supabase.from("user_sticker_states").upsert(
-      normalizedUpdates.map((update) => ({
-        user_id: userId,
-        sticker_id: update.stickerId,
-        quantity: update.quantity,
-        updated_at: updatedAt
-      }))
-    );
   }
 
   function resetFilters() {
@@ -369,6 +501,14 @@ export function PaniniApp() {
     }
   }
 
+  if (!isSessionLoaded) {
+    return null;
+  }
+
+  if (!currentUser) {
+    return <VisitorStartScreen onStart={startVisitorSession} />;
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -394,28 +534,21 @@ export function PaniniApp() {
           </nav>
 
           <div className="user-area">
-            <select className="select" value={currentUserId} onChange={(event) => setCurrentUserId(event.target.value)}>
-              {users.map((user) => (
-                <option key={user.id} value={user.id}>
-                  {user.name}
-                </option>
-              ))}
-            </select>
-            {hasSupabaseConfig ? (
-              isSupabaseReady ? (
-                <>
-                  <button className="button primary" onClick={signInWithGoogle}>
-                    <LogIn size={16} />
-                    Google
-                  </button>
-                  <button className="icon-button" onClick={signOut} aria-label="Cerrar sesion" title="Cerrar sesion">
-                    <LogOut size={17} />
-                  </button>
-                </>
-              ) : null
+            <span className="badge">{isAuthenticated ? "Google" : "Visitante"}: {currentUser.name}</span>
+            {isAuthenticated ? (
+              <button className="button" onClick={handleSignOut}>
+                <LogOut size={16} />
+                Salir
+              </button>
             ) : (
-              <span className="badge">Modo demo</span>
+              <button className="button" disabled={!hasSupabaseConfig} onClick={handleGoogleSignIn}>
+                <LogIn size={16} />
+                Google
+              </button>
             )}
+            <button className="button primary" onClick={() => setIsAssistantOpen(true)}>
+              Abrir asistente
+            </button>
             <button className="icon-button" onClick={exportInventory} aria-label="Exportar inventario" title="Exportar inventario">
               <Download size={17} />
             </button>
@@ -451,22 +584,20 @@ export function PaniniApp() {
         ) : null}
 
         {view === "missing" ? (
-          <StickerList
+          <AlbumView
             stickers={missingStickers}
             userState={currentState}
-            emptyText="No hay faltantes con estos filtros."
-            mode="missing"
             onUpdateQuantity={updateQuantity}
+            onUpdateQuantities={updateQuantities}
           />
         ) : null}
 
         {view === "duplicates" ? (
-          <StickerList
+          <AlbumView
             stickers={duplicateStickers}
             userState={currentState}
-            emptyText="No hay repetidas con estos filtros."
-            mode="duplicates"
             onUpdateQuantity={updateQuantity}
+            onUpdateQuantities={updateQuantities}
           />
         ) : null}
 
@@ -483,7 +614,80 @@ export function PaniniApp() {
             onUpdateUserQuantities={updateUserQuantities}
           />
         ) : null}
+
+        {view === "compare" && !compareUser ? (
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Cambios</h2>
+            </div>
+            <div className="empty">No hay otros usuarios disponibles para comparar todavia.</div>
+          </section>
+        ) : null}
       </div>
+      {isAssistantOpen ? (
+        <AlbumAssistantModal
+          baseStickers={allStickers}
+          userState={currentState}
+          currentIndex={assistantIndex}
+          onIndexChange={setAssistantIndex}
+          onUpdateQuantity={updateQuantity}
+          onClose={() => setIsAssistantOpen(false)}
+        />
+      ) : null}
+    </main>
+  );
+}
+
+function VisitorStartScreen({ onStart }: { onStart: (name: string) => void }) {
+  const [mode, setMode] = useState<"start" | "visitor">("start");
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+
+  async function handleGoogleStart() {
+    const result = await signInWithGoogle();
+    if (result?.error) setError(result.error.message);
+  }
+
+  return (
+    <main className="start-screen">
+      <section className="start-panel">
+        <div className="brand start-brand">
+          <div className="brand-mark">26</div>
+          <div>
+            <h1>Panini Mundial 2026</h1>
+            <p>Inventario local del album base</p>
+          </div>
+        </div>
+
+        {mode === "start" ? (
+          <div className="start-actions">
+            <button className="button primary" onClick={() => setMode("visitor")}>
+              Iniciar como visitante
+            </button>
+            <button className="button" disabled={!hasSupabaseConfig} onClick={handleGoogleStart}>
+              <LogIn size={16} />
+              Iniciar sesion con Google
+            </button>
+            {error ? <span className="form-error">{error}</span> : null}
+          </div>
+        ) : (
+          <form
+            className="visitor-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onStart(name);
+            }}
+          >
+            <label>
+              Nombre del coleccionista
+              <input className="input" value={name} onChange={(event) => setName(event.target.value)} autoFocus />
+            </label>
+            <button className="button primary" disabled={!name.trim()}>
+              Crear album vacio
+            </button>
+          </form>
+        )}
+      </section>
     </main>
   );
 }
@@ -664,7 +868,6 @@ function AlbumView({
       stickers: stickers.filter((sticker) => sticker.countryCode === country.code)
     }))
     .filter((group) => group.stickers.length > 0);
-
   function toggleGroup(groupId: string) {
     setCollapsedGroups((previous) => {
       const next = new Set(previous);
@@ -680,6 +883,7 @@ function AlbumView({
 
   return (
     <div className="album-layout">
+      {stickers.length === 0 ? <div className="empty">No hay laminas para mostrar con estos filtros.</div> : null}
       <StickerGroupAccordion
         groupId="section-intro"
         title="Introduccion"
@@ -730,6 +934,224 @@ function AlbumView({
         onSetAll={setGroupQuantity}
         onUpdateQuantity={onUpdateQuantity}
       />
+    </div>
+  );
+}
+
+function buildAssistantGroups(baseStickers: StickerModel[], sortMode: AlbumSortMode): AssistantGroup[] {
+  const intro = baseStickers.filter((sticker) => sticker.sectionId === "intro");
+  const museum = baseStickers.filter((sticker) => sticker.sectionId === "museum");
+  const countries =
+    sortMode === "alphabetical"
+      ? [...paniniWorldCup2026Catalog.countries].sort((a, b) => a.code.localeCompare(b.code, "es"))
+      : paniniWorldCup2026Catalog.countries;
+  const countryGroups = countries
+    .map((country) => ({
+      id: `country-${country.code}`,
+      label: `${country.code} - ${country.nameEs}`,
+      image: countryFlagByCode[country.code] ?? "⚽",
+      stickers: baseStickers.filter((sticker) => sticker.countryCode === country.code)
+    }))
+    .filter((group) => group.stickers.length > 0);
+
+  return [
+    intro.length > 0
+      ? {
+          id: "section-intro",
+          label: "Introduccion",
+          image: "🏆",
+          stickers: intro
+        }
+      : null,
+    ...countryGroups,
+    museum.length > 0
+      ? {
+          id: "section-museum",
+          label: "FIFA Museum",
+          image: "🏛️",
+          stickers: museum
+        }
+      : null
+  ].filter(Boolean) as AssistantGroup[];
+}
+
+function AlbumAssistantModal({
+  baseStickers,
+  userState,
+  currentIndex,
+  onIndexChange,
+  onUpdateQuantity,
+  onClose
+}: {
+  baseStickers: StickerModel[];
+  userState: UserStateMap;
+  currentIndex: number;
+  onIndexChange: (index: number) => void;
+  onUpdateQuantity: (stickerId: string, quantity: number) => void;
+  onClose: () => void;
+}) {
+  const [sortMode, setSortMode] = useState<AlbumSortMode>("album");
+  const groups = useMemo(() => buildAssistantGroups(baseStickers, sortMode), [baseStickers, sortMode]);
+  const stickers = useMemo(() => groups.flatMap((group) => group.stickers), [groups]);
+  const sticker = stickers[currentIndex];
+  const quantity = sticker ? getQuantity(userState, sticker.id) : 0;
+  const status = getStickerStatus(quantity);
+  const content = sticker ? getStickerContent(sticker) : undefined;
+  const displayTitle = sticker ? getStickerDisplayTitle(sticker) : "";
+  const contentDescription = sticker ? getStickerContentDescription(sticker) : "";
+  const currentGroup =
+    groups.find((group) => sticker && group.stickers.some((groupSticker) => groupSticker.id === sticker.id)) ?? groups[0];
+  const currentGroupIndex = currentGroup ? groups.findIndex((group) => group.id === currentGroup.id) : 0;
+  const groupStartIndex = currentGroup ? stickers.findIndex((groupSticker) => groupSticker.id === currentGroup.stickers[0]?.id) : 0;
+  const currentInGroupIndex = currentGroup && groupStartIndex >= 0 ? currentIndex - groupStartIndex : 0;
+  const groupProgress = currentGroup ? getGroupSummary(currentGroup.stickers, userState) : null;
+
+  useEffect(() => {
+    onIndexChange(Math.min(currentIndex, Math.max(0, stickers.length - 1)));
+  }, [currentIndex, onIndexChange, stickers.length]);
+
+  function goTo(delta: number) {
+    onIndexChange(Math.min(stickers.length - 1, Math.max(0, currentIndex + delta)));
+  }
+
+  function goToGroup(groupIndex: number) {
+    const group = groups[groupIndex];
+    const firstSticker = group?.stickers[0];
+    if (!firstSticker) return;
+    const nextIndex = stickers.findIndex((groupSticker) => groupSticker.id === firstSticker.id);
+    if (nextIndex >= 0) onIndexChange(nextIndex);
+  }
+
+  function toggleCurrent() {
+    if (!sticker) return;
+    onUpdateQuantity(sticker.id, quantity > 0 ? 0 : 1);
+  }
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.tagName === "INPUT" || target?.tagName === "SELECT" || target?.tagName === "TEXTAREA") return;
+
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        onIndexChange(Math.max(0, currentIndex - 1));
+      }
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        onIndexChange(Math.min(stickers.length - 1, currentIndex + 1));
+      }
+      if (event.key === "[") {
+        event.preventDefault();
+        const previousGroup = groups[currentGroupIndex - 1];
+        const firstSticker = previousGroup?.stickers[0];
+        const nextIndex = firstSticker ? stickers.findIndex((groupSticker) => groupSticker.id === firstSticker.id) : -1;
+        if (nextIndex >= 0) onIndexChange(nextIndex);
+      }
+      if (event.key === "]") {
+        event.preventDefault();
+        const nextGroup = groups[currentGroupIndex + 1];
+        const firstSticker = nextGroup?.stickers[0];
+        const nextIndex = firstSticker ? stickers.findIndex((groupSticker) => groupSticker.id === firstSticker.id) : -1;
+        if (nextIndex >= 0) onIndexChange(nextIndex);
+      }
+      if (event.key === " ") {
+        event.preventDefault();
+        if (sticker) onUpdateQuantity(sticker.id, quantity > 0 ? 0 : 1);
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [currentGroupIndex, currentIndex, groups, onClose, onIndexChange, onUpdateQuantity, quantity, sticker, stickers]);
+
+  if (!sticker) return null;
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Asistente de marcado">
+      <div className="assistant-modal">
+        <div className="assistant-header">
+          <div>
+            <h2>Asistente de marcado</h2>
+            <p>{currentIndex + 1} de {stickers.length}</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Cerrar asistente">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="assistant-group-nav">
+          <button className="icon-button" onClick={() => goToGroup(currentGroupIndex - 1)} disabled={currentGroupIndex <= 0} aria-label="Grupo anterior">
+            <ArrowLeft size={17} />
+          </button>
+          <div className="assistant-group-current">
+            <div className="assistant-section-image" aria-hidden="true">{currentGroup?.image ?? "⚽"}</div>
+            <div>
+              <strong>{currentGroup?.label ?? "Album"}</strong>
+              <span>
+                {currentInGroupIndex + 1} de {currentGroup?.stickers.length ?? 0}
+                {groupProgress ? ` / ${groupProgress.owned}/${groupProgress.total} obtenidas` : ""}
+              </span>
+            </div>
+          </div>
+          <button className="icon-button" onClick={() => goToGroup(currentGroupIndex + 1)} disabled={currentGroupIndex >= groups.length - 1} aria-label="Grupo siguiente">
+            <ArrowRight size={17} />
+          </button>
+          <select className="select assistant-order-select" value={sortMode} onChange={(event) => setSortMode(event.target.value as AlbumSortMode)} aria-label="Orden del asistente">
+            <option value="album">Orden del album</option>
+            <option value="alphabetical">Orden alfabetico</option>
+          </select>
+          <select className="select assistant-group-select" value={currentGroup?.id ?? ""} onChange={(event) => goToGroup(groups.findIndex((group) => group.id === event.target.value))} aria-label="Ir a seccion o seleccion">
+            {groups.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className={`assistant-card ${status}`}>
+          <span className={`badge ${status}`}>{statusLabels[status]}</span>
+          <strong>{sticker.reference}</strong>
+          <p>{displayTitle}</p>
+          <div className="assistant-sticker-details">
+            <span>Contenido: {contentDescription}</span>
+            <span>Ubicacion: {currentGroup?.label ?? sticker.sectionName}</span>
+            {content?.group ? <span>Grupo: {content.group}</span> : null}
+            {sticker.number ? <span>Numero interno: {String(sticker.number).padStart(3, "0")}</span> : null}
+          </div>
+          <div className="badges">
+            <span className="badge">{typeLabels[sticker.type]}</span>
+            {sticker.isFoil ? <span className="badge">Foil</span> : null}
+            <span className="badge">Cantidad {quantity}</span>
+          </div>
+        </div>
+
+        <div className="assistant-controls">
+          <button className="button" onClick={() => goTo(-1)} disabled={currentIndex === 0}>
+            <ArrowLeft size={16} />
+            Anterior
+          </button>
+          <button className="button primary" onClick={toggleCurrent}>
+            <Check size={16} />
+            {quantity > 0 ? "Desmarcar" : "Marcar"}
+          </button>
+          <button className="button" onClick={() => goTo(1)} disabled={currentIndex === stickers.length - 1}>
+            Siguiente
+            <ArrowRight size={16} />
+          </button>
+        </div>
+
+        <div className="assistant-hints">
+          <span>Flecha izquierda: anterior</span>
+          <span>Flecha derecha: siguiente</span>
+          <span>[ y ]: cambiar seccion</span>
+          <span>Espacio: marcar/desmarcar</span>
+        </div>
+      </div>
     </div>
   );
 }
