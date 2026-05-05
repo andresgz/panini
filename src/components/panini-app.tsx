@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
 import {
   ArrowDownUp,
   ArrowLeft,
   ArrowRight,
-  Check,
   ChevronDown,
   CircleMinus,
   CirclePlus,
@@ -33,12 +32,13 @@ import {
   getUserProgress,
   normalizeQuantity
 } from "@/lib/inventory";
-import { getStickerContent, getStickerContentDescription, getStickerDisplayTitle } from "@/lib/sticker-content";
+import { getStickerDisplayTitle } from "@/lib/sticker-content";
 import { createSupabaseClient, hasSupabaseConfig, signInWithGoogle, signOut } from "@/lib/supabase";
 import type { Sticker as StickerModel, StickerFilters, StickerType, User, UserStateMap } from "@/types/panini";
 
 type View = "dashboard" | "album" | "missing" | "duplicates" | "compare";
 type AlbumSortMode = "album" | "alphabetical";
+type AssistantMarkMode = "owned" | "missing";
 type TradeStatus = "requested" | "accepted" | "completed";
 
 type TradeProcess = {
@@ -92,11 +92,11 @@ const statusLabels = {
 };
 
 const views: Array<{ id: View; label: string; icon: LucideIcon }> = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "album", label: "Album", icon: Sticker },
   { id: "missing", label: "Faltantes", icon: ListChecks },
   { id: "duplicates", label: "Repetidas", icon: Repeat2 },
-  { id: "compare", label: "Cambios", icon: ArrowDownUp }
+  { id: "compare", label: "Cambios", icon: ArrowDownUp },
+  { id: "dashboard", label: "Estadísticas", icon: LayoutDashboard }
 ];
 
 const countryFlagByCode: Record<string, string> = {
@@ -150,6 +150,43 @@ const countryFlagByCode: Record<string, string> = {
   PAN: "🇵🇦"
 };
 
+function AppLogo() {
+  const clipId = useId().replace(/:/g, "");
+
+  return (
+    <svg className="brand-logo" viewBox="0 0 64 64" role="img" aria-label="Panini Mundial 2026">
+      <defs>
+        <clipPath id={`${clipId}-logo-ball-clip`}>
+          <circle cx="32" cy="20" r="16" />
+        </clipPath>
+      </defs>
+      <path className="brand-logo-shadow" d="M17 59h30l-4-7H21l-4 7Z" />
+      <path className="brand-logo-base brand-logo-blue" d="M16 54h32l-3-7H19l-3 7Z" />
+      <path className="brand-logo-stem brand-logo-red" d="M25 45h14l-4-18h-6l-4 18Z" />
+      <path className="brand-logo-swoosh brand-logo-green" d="M18 18c-7 12-2 26 14 32-2-12-8-18-14-32Z" />
+      <path className="brand-logo-swoosh brand-logo-red" d="M46 18c7 12 2 26-14 32 2-12 8-18 14-32Z" />
+      <g clipPath={`url(#${clipId}-logo-ball-clip)`}>
+        <rect className="brand-logo-white" x="14" y="2" width="36" height="36" />
+        <rect className="brand-logo-blue" x="14" y="2" width="17" height="17" />
+        {[6, 14, 22, 30].map((y) => (
+          <rect key={y} className="brand-logo-red" x="31" y={y} width="21" height="4" />
+        ))}
+        {[22, 30].map((y) => (
+          <rect key={y} className="brand-logo-red" x="14" y={y} width="38" height="4" />
+        ))}
+        {[18, 26, 34].map((x) => (
+          <circle key={x} className="brand-logo-white" cx={x} cy="9" r="1.4" />
+        ))}
+        {[22, 30].map((x) => (
+          <circle key={x} className="brand-logo-white" cx={x} cy="15" r="1.4" />
+        ))}
+      </g>
+      <circle className="brand-logo-outline" cx="32" cy="20" r="16" />
+      <text className="brand-logo-year" x="32" y="53" textAnchor="middle">2026</text>
+    </svg>
+  );
+}
+
 function formatPercent(value: number) {
   return `${value.toFixed(1)}%`;
 }
@@ -160,6 +197,9 @@ function localStorageKey(userId: string) {
 
 const tradeStorageKey = "panini-2026-trade-processes";
 const visitorProfileKey = "panini-2026-visitor-profile";
+const filtersSessionKey = "panini-2026-session-filters";
+const albumSortSessionKey = "panini-2026-session-album-sort";
+const assistantSortSessionKey = "panini-2026-session-assistant-sort";
 const localVisitorUserId = "visitor-local";
 
 function readLocalState(userId: string) {
@@ -210,16 +250,69 @@ function writeVisitorProfile(user: User) {
   window.localStorage.setItem(visitorProfileKey, JSON.stringify(user));
 }
 
+function isAlbumSortMode(value: unknown): value is AlbumSortMode {
+  return value === "album" || value === "alphabetical";
+}
+
+function readSessionSortMode(key: string) {
+  if (typeof window === "undefined") return "album";
+  const value = window.sessionStorage.getItem(key);
+  return isAlbumSortMode(value) ? value : "album";
+}
+
+function writeSessionSortMode(key: string, value: AlbumSortMode) {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(key, value);
+}
+
+function readSessionFilters() {
+  if (typeof window === "undefined") return {};
+  const raw = window.sessionStorage.getItem(filtersSessionKey);
+  if (!raw) return {};
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<StickerFilters>;
+    const filters: StickerFilters = {};
+    if (typeof parsed.query === "string") filters.query = parsed.query;
+    if (typeof parsed.sectionId === "string") filters.sectionId = parsed.sectionId;
+    if (typeof parsed.countryCode === "string") filters.countryCode = parsed.countryCode;
+    if (typeof parsed.type === "string") filters.type = parsed.type as StickerFilters["type"];
+    if (typeof parsed.onlyFoil === "boolean") filters.onlyFoil = parsed.onlyFoil;
+    if (typeof parsed.onlyPlayers === "boolean") filters.onlyPlayers = parsed.onlyPlayers;
+    return filters;
+  } catch {
+    return {};
+  }
+}
+
+function writeSessionFilters(filters: StickerFilters) {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(filtersSessionKey, JSON.stringify(filters));
+}
+
+async function withTimeout<T>(operation: PromiseLike<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([Promise.resolve(operation), timeout]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 export function PaniniApp() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setView] = useState<View>("album");
   const [isAssistantOpen, setIsAssistantOpen] = useState(false);
   const [assistantIndex, setAssistantIndex] = useState(0);
   const [users, setUsers] = useState<User[]>([]);
   const [currentUserId, setCurrentUserId] = useState("");
   const [compareUserId, setCompareUserId] = useState("");
   const [states, setStates] = useState<Record<string, UserStateMap>>({});
-  const [filters, setFilters] = useState<StickerFilters>({});
+  const [filters, setFilters] = useState<StickerFilters>(() => readSessionFilters());
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [isSessionLoaded, setIsSessionLoaded] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -235,31 +328,50 @@ export function PaniniApp() {
   const progressBySection = useMemo(() => getProgressBySection(allStickers, currentState), [currentState]);
   const progressByCountry = useMemo(() => getProgressByCountry(allStickers, currentState), [currentState]);
 
+  function showPersistenceError(action: string, error: { message: string }) {
+    setBackupMessage(`${action}: ${error.message}`);
+  }
+
+  useEffect(() => {
+    writeSessionFilters(filters);
+  }, [filters]);
+
   useEffect(() => {
     let cancelled = false;
     const supabase = createSupabaseClient();
 
     async function loadSession() {
-      if (supabase) {
-        const { data } = await supabase.auth.getSession();
-        const authUser = data.session?.user;
-        if (authUser) {
-          await loadAuthenticatedUser(authUser);
-          if (!cancelled) {
-            setIsAuthenticated(true);
-            setIsSessionLoaded(true);
+      try {
+        if (supabase) {
+          const { data } = await withTimeout(
+            supabase.auth.getSession(),
+            8000,
+            "La sesion de Supabase tardo demasiado en responder."
+          );
+          const authUser = data.session?.user;
+          if (authUser) {
+            if (!cancelled) setIsAuthenticated(true);
+            await loadAuthenticatedUser(authUser);
+            if (!cancelled) {
+              setIsSessionLoaded(true);
+            }
+            return;
           }
-          return;
         }
-      }
 
-      const visitor = readVisitorProfile();
-      if (visitor && !cancelled) {
-        setUsers([visitor]);
-        setCurrentUserId(visitor.id);
-        setStates({ [visitor.id]: readLocalState(visitor.id) });
+        const visitor = readVisitorProfile();
+        if (visitor && !cancelled) {
+          setUsers([visitor]);
+          setCurrentUserId(visitor.id);
+          setStates({ [visitor.id]: readLocalState(visitor.id) });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setBackupMessage(error instanceof Error ? error.message : "No se pudo cargar la sesion.");
+        }
+      } finally {
+        if (!cancelled) setIsSessionLoaded(true);
       }
-      if (!cancelled) setIsSessionLoaded(true);
     }
 
     async function loadAuthenticatedUser(authUser: {
@@ -273,28 +385,48 @@ export function PaniniApp() {
         name:
           String(authUser.user_metadata.full_name ?? authUser.user_metadata.name ?? authUser.email?.split("@")[0] ?? "Coleccionista"),
         email: authUser.email,
+        avatarUrl: typeof authUser.user_metadata.avatar_url === "string"
+          ? authUser.user_metadata.avatar_url
+          : typeof authUser.user_metadata.picture === "string"
+            ? authUser.user_metadata.picture
+            : undefined,
         createdAt: authUser.created_at ?? new Date().toISOString()
       };
 
       if (!supabase) return;
-      await supabase.from("users").upsert({
-        id: profile.id,
-        name: profile.name,
-        email: profile.email
-      });
+      if (!cancelled) setIsAuthenticated(true);
 
-      const [{ data: userRows }, { data: stateRows }] = await Promise.all([
-        supabase.from("users").select("id,name,email,created_at").order("name"),
-        supabase.from("user_sticker_states").select("user_id,sticker_id,quantity,updated_at")
-      ]);
+      const { error: profileError } = await withTimeout(
+        supabase.from("users").upsert({
+          id: profile.id,
+          name: profile.name,
+          email: profile.email
+        }),
+        8000,
+        "Supabase tardo demasiado sincronizando tu perfil."
+      );
+
+      if (profileError) showPersistenceError("No se pudo sincronizar tu perfil en Supabase", profileError);
+
+      const [{ data: userRows, error: usersError }, { data: stateRows, error: statesError }] = await withTimeout(
+        Promise.all([
+          supabase.from("users").select("id,name,email,created_at").order("name"),
+          supabase.from("user_sticker_states").select("user_id,sticker_id,quantity,updated_at")
+        ]),
+        8000,
+        "Supabase tardo demasiado cargando el inventario."
+      );
 
       if (cancelled) return;
+      if (usersError) showPersistenceError("No se pudieron cargar los usuarios desde Supabase", usersError);
+      if (statesError) showPersistenceError("No se pudo cargar el inventario desde Supabase", statesError);
 
       const loadedUsers =
         userRows?.map((row) => ({
           id: row.id,
           name: row.name,
           email: row.email ?? undefined,
+          avatarUrl: row.id === profile.id ? profile.avatarUrl : undefined,
           createdAt: row.created_at
         })) ?? [profile];
       const loadedStates = (stateRows ?? []).reduce<Record<string, UserStateMap>>((acc, row) => {
@@ -314,8 +446,8 @@ export function PaniniApp() {
     const { data: listener } =
       supabase?.auth.onAuthStateChange((_event, session) => {
         if (!session?.user) return;
+        setIsAuthenticated(true);
         loadAuthenticatedUser(session.user).then(() => {
-          setIsAuthenticated(true);
           setIsSessionLoaded(true);
         });
       }) ?? { data: { subscription: null } };
@@ -327,10 +459,10 @@ export function PaniniApp() {
   }, []);
 
   useEffect(() => {
-    if (!currentUserId) return;
+    if (!currentUserId || isAuthenticated) return;
     const saved = readLocalState(currentUserId);
     setStates((previous) => ({ ...previous, [currentUserId]: saved }));
-  }, [currentUserId]);
+  }, [currentUserId, isAuthenticated]);
 
   function startVisitorSession(name: string) {
     const trimmedName = name.trim();
@@ -345,7 +477,7 @@ export function PaniniApp() {
     setCurrentUserId(visitor.id);
     setCompareUserId("");
     setStates({ [visitor.id]: readLocalState(visitor.id) });
-    setView("dashboard");
+    setView("album");
   }
 
   async function handleGoogleSignIn() {
@@ -360,7 +492,7 @@ export function PaniniApp() {
     setCurrentUserId("");
     setCompareUserId("");
     setStates({});
-    setView("dashboard");
+    setView("album");
     const visitor = readVisitorProfile();
     if (visitor) {
       setUsers([visitor]);
@@ -381,12 +513,16 @@ export function PaniniApp() {
 
     const supabase = createSupabaseClient();
     if (supabase && isAuthenticated) {
-      await supabase.from("user_sticker_states").upsert({
-        user_id: currentUser.id,
-        sticker_id: stickerId,
-        quantity: nextQuantity,
-        updated_at: new Date().toISOString()
-      });
+      const { error } = await supabase.from("user_sticker_states").upsert(
+        {
+          user_id: currentUser.id,
+          sticker_id: stickerId,
+          quantity: nextQuantity,
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: "user_id,sticker_id" }
+      );
+      if (error) showPersistenceError("No se pudo guardar la lamina en Supabase", error);
     }
   }
 
@@ -409,14 +545,16 @@ export function PaniniApp() {
     const supabase = createSupabaseClient();
     if (supabase && isAuthenticated) {
       const updatedAt = new Date().toISOString();
-      await supabase.from("user_sticker_states").upsert(
+      const { error } = await supabase.from("user_sticker_states").upsert(
         normalizedUpdates.map((update) => ({
           user_id: currentUser.id,
           sticker_id: update.stickerId,
           quantity: update.quantity,
           updated_at: updatedAt
-        }))
+        })),
+        { onConflict: "user_id,sticker_id" }
       );
+      if (error) showPersistenceError("No se pudieron guardar las laminas en Supabase", error);
     }
   }
 
@@ -502,7 +640,19 @@ export function PaniniApp() {
   }
 
   if (!isSessionLoaded) {
-    return null;
+    return (
+      <main className="start-screen">
+        <section className="start-panel">
+          <div className="brand start-brand">
+            <AppLogo />
+            <div>
+              <h1>Panini Mundial 2026</h1>
+              <p>Cargando tu album...</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    );
   }
 
   if (!currentUser) {
@@ -514,12 +664,19 @@ export function PaniniApp() {
       <header className="topbar">
         <div className="topbar-inner">
           <div className="brand">
-            <div className="brand-mark">26</div>
+            <AppLogo />
             <div>
               <h1>Panini Mundial 2026</h1>
               <p>{paniniWorldCup2026Catalog.album.baseStickerCount} laminas base, catalogo estatico</p>
             </div>
           </div>
+
+          <UserMenu
+            user={currentUser}
+            isAuthenticated={isAuthenticated}
+            onSignIn={handleGoogleSignIn}
+            onSignOut={handleSignOut}
+          />
 
           <nav className="tabs" aria-label="Vistas">
             {views.map((item) => {
@@ -534,18 +691,6 @@ export function PaniniApp() {
           </nav>
 
           <div className="user-area">
-            <span className="badge">{isAuthenticated ? "Google" : "Visitante"}: {currentUser.name}</span>
-            {isAuthenticated ? (
-              <button className="button" onClick={handleSignOut}>
-                <LogOut size={16} />
-                Salir
-              </button>
-            ) : (
-              <button className="button" disabled={!hasSupabaseConfig} onClick={handleGoogleSignIn}>
-                <LogIn size={16} />
-                Google
-              </button>
-            )}
             <button className="button primary" onClick={() => setIsAssistantOpen(true)}>
               Abrir asistente
             </button>
@@ -631,6 +776,7 @@ export function PaniniApp() {
           currentIndex={assistantIndex}
           onIndexChange={setAssistantIndex}
           onUpdateQuantity={updateQuantity}
+          onUpdateQuantities={updateQuantities}
           onClose={() => setIsAssistantOpen(false)}
         />
       ) : null}
@@ -652,7 +798,7 @@ function VisitorStartScreen({ onStart }: { onStart: (name: string) => void }) {
     <main className="start-screen">
       <section className="start-panel">
         <div className="brand start-brand">
-          <div className="brand-mark">26</div>
+          <AppLogo />
           <div>
             <h1>Panini Mundial 2026</h1>
             <p>Inventario local del album base</p>
@@ -692,6 +838,61 @@ function VisitorStartScreen({ onStart }: { onStart: (name: string) => void }) {
   );
 }
 
+function UserMenu({
+  user,
+  isAuthenticated,
+  onSignIn,
+  onSignOut
+}: {
+  user: User;
+  isAuthenticated: boolean;
+  onSignIn: () => void;
+  onSignOut: () => void;
+}) {
+  const initials = user.name
+    .split(" ")
+    .map((part) => part[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase() || "U";
+  const avatarStyle = user.avatarUrl ? { backgroundImage: `url(${user.avatarUrl})` } : undefined;
+
+  return (
+    <details className="user-menu">
+      <summary className="user-menu-trigger" aria-label="Menu de usuario">
+        <span className={`user-avatar ${user.avatarUrl ? "has-image" : ""}`} style={avatarStyle} aria-hidden="true">
+          {user.avatarUrl ? null : initials}
+        </span>
+        <span className="user-menu-name">{user.name}</span>
+        <ChevronDown size={16} />
+      </summary>
+      <div className="user-menu-panel">
+        <div className="user-menu-profile">
+          <span className={`user-avatar large ${user.avatarUrl ? "has-image" : ""}`} style={avatarStyle} aria-hidden="true">
+            {user.avatarUrl ? null : initials}
+          </span>
+          <div>
+            <strong>{user.name}</strong>
+            <span>{isAuthenticated ? user.email ?? "Google" : "Sesion visitante"}</span>
+          </div>
+        </div>
+        {isAuthenticated ? (
+          <button className="user-menu-action" type="button" onClick={onSignOut}>
+            <LogOut size={16} />
+            Cerrar sesion
+          </button>
+        ) : (
+          <button className="user-menu-action" type="button" disabled={!hasSupabaseConfig} onClick={onSignIn}>
+            <LogIn size={16} />
+            Iniciar sesion con Google
+          </button>
+        )}
+      </div>
+    </details>
+  );
+}
+
 function Filters({
   filters,
   onChange,
@@ -703,11 +904,10 @@ function Filters({
 }) {
   return (
     <div className="toolbar">
-      <div style={{ position: "relative" }}>
-        <Search size={16} style={{ position: "absolute", left: 11, top: 11, color: "var(--muted)" }} />
+      <div className="filter-search">
+        <Search size={16} className="filter-search-icon" />
         <input
           className="input"
-          style={{ paddingLeft: 34 }}
           placeholder="Buscar por referencia, pais, titulo o tipo"
           value={filters.query ?? ""}
           onChange={(event) => onChange({ ...filters, query: event.target.value })}
@@ -849,7 +1049,7 @@ function AlbumView({
   onUpdateQuantity: (stickerId: string, quantity: number) => void;
   onUpdateQuantities: (updates: Array<{ stickerId: string; quantity: number }>) => void;
 }) {
-  const [sortMode, setSortMode] = useState<AlbumSortMode>("album");
+  const [sortMode, setSortMode] = useState<AlbumSortMode>(() => readSessionSortMode(albumSortSessionKey));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     () => new Set(paniniWorldCup2026Catalog.countries.map((country) => `country-${country.code}`))
   );
@@ -862,6 +1062,11 @@ function AlbumView({
 
     return paniniWorldCup2026Catalog.countries;
   }, [sortMode]);
+
+  useEffect(() => {
+    writeSessionSortMode(albumSortSessionKey, sortMode);
+  }, [sortMode]);
+
   const byCountry = sortedCountries
     .map((country) => ({
       country,
@@ -981,6 +1186,7 @@ function AlbumAssistantModal({
   currentIndex,
   onIndexChange,
   onUpdateQuantity,
+  onUpdateQuantities,
   onClose
 }: {
   baseStickers: StickerModel[];
@@ -988,23 +1194,27 @@ function AlbumAssistantModal({
   currentIndex: number;
   onIndexChange: (index: number) => void;
   onUpdateQuantity: (stickerId: string, quantity: number) => void;
+  onUpdateQuantities: (updates: Array<{ stickerId: string; quantity: number }>) => Promise<void>;
   onClose: () => void;
 }) {
-  const [sortMode, setSortMode] = useState<AlbumSortMode>("album");
+  const [sortMode, setSortMode] = useState<AlbumSortMode>(() => readSessionSortMode(assistantSortSessionKey));
+  const [markMode, setMarkMode] = useState<AssistantMarkMode | null>(null);
+  const [isConfirmingMissingMode, setIsConfirmingMissingMode] = useState(false);
+  const [isPreparingMissingMode, setIsPreparingMissingMode] = useState(false);
   const groups = useMemo(() => buildAssistantGroups(baseStickers, sortMode), [baseStickers, sortMode]);
   const stickers = useMemo(() => groups.flatMap((group) => group.stickers), [groups]);
   const sticker = stickers[currentIndex];
   const quantity = sticker ? getQuantity(userState, sticker.id) : 0;
-  const status = getStickerStatus(quantity);
-  const content = sticker ? getStickerContent(sticker) : undefined;
-  const displayTitle = sticker ? getStickerDisplayTitle(sticker) : "";
-  const contentDescription = sticker ? getStickerContentDescription(sticker) : "";
   const currentGroup =
     groups.find((group) => sticker && group.stickers.some((groupSticker) => groupSticker.id === sticker.id)) ?? groups[0];
   const currentGroupIndex = currentGroup ? groups.findIndex((group) => group.id === currentGroup.id) : 0;
   const groupStartIndex = currentGroup ? stickers.findIndex((groupSticker) => groupSticker.id === currentGroup.stickers[0]?.id) : 0;
   const currentInGroupIndex = currentGroup && groupStartIndex >= 0 ? currentIndex - groupStartIndex : 0;
   const groupProgress = currentGroup ? getGroupSummary(currentGroup.stickers, userState) : null;
+
+  useEffect(() => {
+    writeSessionSortMode(assistantSortSessionKey, sortMode);
+  }, [sortMode]);
 
   useEffect(() => {
     onIndexChange(Math.min(currentIndex, Math.max(0, stickers.length - 1)));
@@ -1022,9 +1232,33 @@ function AlbumAssistantModal({
     if (nextIndex >= 0) onIndexChange(nextIndex);
   }
 
-  function toggleCurrent() {
+  function incrementCurrent() {
     if (!sticker) return;
-    onUpdateQuantity(sticker.id, quantity > 0 ? 0 : 1);
+    onUpdateQuantity(sticker.id, quantity + 1);
+  }
+
+  const applyPrimaryAction = useCallback((targetSticker: StickerModel) => {
+    if (markMode === "missing") {
+      onUpdateQuantity(targetSticker.id, 0);
+      return;
+    }
+    onUpdateQuantity(targetSticker.id, getQuantity(userState, targetSticker.id) + 1);
+  }, [markMode, onUpdateQuantity, userState]);
+
+  function selectAndApply(targetSticker: StickerModel) {
+    const nextIndex = stickers.findIndex((groupSticker) => groupSticker.id === targetSticker.id);
+    if (nextIndex >= 0) onIndexChange(nextIndex);
+    applyPrimaryAction(targetSticker);
+  }
+
+  async function startMissingMode() {
+    setIsPreparingMissingMode(true);
+    try {
+      await onUpdateQuantities(baseStickers.map((baseSticker) => ({ stickerId: baseSticker.id, quantity: 1 })));
+      setMarkMode("missing");
+    } finally {
+      setIsPreparingMissingMode(false);
+    }
   }
 
   useEffect(() => {
@@ -1056,7 +1290,7 @@ function AlbumAssistantModal({
       }
       if (event.key === " ") {
         event.preventDefault();
-        if (sticker) onUpdateQuantity(sticker.id, quantity > 0 ? 0 : 1);
+        if (sticker && markMode) applyPrimaryAction(sticker);
       }
       if (event.key === "Escape") {
         event.preventDefault();
@@ -1066,9 +1300,63 @@ function AlbumAssistantModal({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentGroupIndex, currentIndex, groups, onClose, onIndexChange, onUpdateQuantity, quantity, sticker, stickers]);
+  }, [applyPrimaryAction, currentGroupIndex, currentIndex, groups, markMode, onClose, onIndexChange, quantity, sticker, stickers]);
 
   if (!sticker) return null;
+
+  if (!markMode) {
+    return (
+      <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Configurar asistente de marcado">
+        <div className="assistant-modal assistant-start-modal">
+          <div className="assistant-header">
+            <div>
+              <h2>Asistente de marcado</h2>
+              <p>Elige como quieres registrar tu album.</p>
+            </div>
+            <button className="icon-button" onClick={onClose} aria-label="Cerrar asistente">
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="assistant-mode-grid">
+            <button className="assistant-mode-card" type="button" onClick={() => setMarkMode("owned")}>
+              <strong>Marcar las que tengo</strong>
+              <span>El album empieza vacio. Cada click o espacio agrega una copia de la lamina seleccionada.</span>
+            </button>
+            <button className="assistant-mode-card emphasized" type="button" onClick={() => setIsConfirmingMissingMode(true)} disabled={isPreparingMissingMode}>
+              <strong>{isPreparingMissingMode ? "Preparando album..." : "Marcar las que me faltan"}</strong>
+              <span>Primero se marca todo como obtenido. Cada click o espacio deja esa lamina en faltante.</span>
+            </button>
+          </div>
+
+          {isConfirmingMissingMode ? (
+            <div className="assistant-confirm-box" role="alert">
+              <div>
+                <strong>Confirmar modo faltantes</strong>
+                <span>
+                  Se marcará todo el album como lleno con cantidad 1. Luego, las laminas que selecciones en el asistente se desmarcarán y quedarán como faltantes.
+                </span>
+              </div>
+              <div className="assistant-confirm-actions">
+                <button className="button" type="button" onClick={() => setIsConfirmingMissingMode(false)} disabled={isPreparingMissingMode}>
+                  Cancelar
+                </button>
+                <button className="button primary" type="button" onClick={startMissingMode} disabled={isPreparingMissingMode}>
+                  {isPreparingMissingMode ? "Preparando..." : "Confirmar"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="assistant-mode-note">
+            <strong>Nota:</strong> el modo de faltantes actualiza las {baseStickers.length} laminas base a cantidad 1 antes de iniciar.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const primaryActionLabel = markMode === "missing" ? "Click para marcar como faltante." : "Click para agregar una copia.";
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Asistente de marcado">
@@ -1113,21 +1401,33 @@ function AlbumAssistantModal({
           </select>
         </div>
 
-        <div className={`assistant-card ${status}`}>
-          <span className={`badge ${status}`}>{statusLabels[status]}</span>
-          <strong>{sticker.reference}</strong>
-          <p>{displayTitle}</p>
-          <div className="assistant-sticker-details">
-            <span>Contenido: {contentDescription}</span>
-            <span>Ubicacion: {currentGroup?.label ?? sticker.sectionName}</span>
-            {content?.group ? <span>Grupo: {content.group}</span> : null}
-            {sticker.number ? <span>Numero interno: {String(sticker.number).padStart(3, "0")}</span> : null}
+        <div className="assistant-workspace">
+          <div className="assistant-sticker-grid" aria-label={`Laminas de ${currentGroup?.label ?? "la seccion"}`}>
+            {currentGroup?.stickers.map((groupSticker) => {
+              const groupStickerQuantity = getQuantity(userState, groupSticker.id);
+              const groupStickerStatus = getStickerStatus(groupStickerQuantity);
+              const isCurrent = groupSticker.id === sticker.id;
+
+              return (
+                <button
+                  key={groupSticker.id}
+                  className={`assistant-sticker-tile ${groupStickerStatus} ${isCurrent ? "current" : ""}`}
+                  type="button"
+                  aria-current={isCurrent ? "true" : undefined}
+                  aria-label={`${groupSticker.reference}, ${statusLabels[groupStickerStatus]}, cantidad ${groupStickerQuantity}. ${primaryActionLabel}`}
+                  onClick={() => selectAndApply(groupSticker)}
+                >
+                  <span className="assistant-tile-reference">{groupSticker.reference}</span>
+                  <span className="assistant-tile-title">{getStickerDisplayTitle(groupSticker)}</span>
+                  <span className="assistant-tile-meta">
+                    <span className={`status-dot ${groupStickerStatus}`} aria-hidden="true" />
+                    {statusLabels[groupStickerStatus]} · {groupStickerQuantity}
+                  </span>
+                </button>
+              );
+            })}
           </div>
-          <div className="badges">
-            <span className="badge">{typeLabels[sticker.type]}</span>
-            {sticker.isFoil ? <span className="badge">Foil</span> : null}
-            <span className="badge">Cantidad {quantity}</span>
-          </div>
+
         </div>
 
         <div className="assistant-controls">
@@ -1135,10 +1435,21 @@ function AlbumAssistantModal({
             <ArrowLeft size={16} />
             Anterior
           </button>
-          <button className="button primary" onClick={toggleCurrent}>
-            <Check size={16} />
-            {quantity > 0 ? "Desmarcar" : "Marcar"}
-          </button>
+          <div className="assistant-quantity-controls">
+            <button className="icon-button" title="Reducir" aria-label="Reducir cantidad" onClick={() => onUpdateQuantity(sticker.id, quantity - 1)}>
+              <CircleMinus size={18} />
+            </button>
+            <input
+              className="quantity-input"
+              inputMode="numeric"
+              value={quantity}
+              onChange={(event) => onUpdateQuantity(sticker.id, Number(event.target.value))}
+              aria-label={`Cantidad de ${sticker.reference}`}
+            />
+            <button className="icon-button" title="Incrementar" aria-label="Incrementar cantidad" onClick={incrementCurrent}>
+              <CirclePlus size={18} />
+            </button>
+          </div>
           <button className="button" onClick={() => goTo(1)} disabled={currentIndex === stickers.length - 1}>
             Siguiente
             <ArrowRight size={16} />
@@ -1149,7 +1460,7 @@ function AlbumAssistantModal({
           <span>Flecha izquierda: anterior</span>
           <span>Flecha derecha: siguiente</span>
           <span>[ y ]: cambiar seccion</span>
-          <span>Espacio: marcar/desmarcar</span>
+          <span>{markMode === "missing" ? "Espacio: marcar faltante" : "Espacio: agregar copia"}</span>
         </div>
       </div>
     </div>
@@ -1254,7 +1565,7 @@ function StickerCard({
   onUpdateQuantity: (stickerId: string, quantity: number) => void;
 }) {
   const status = getStickerStatus(quantity);
-  const toggleQuantity = () => onUpdateQuantity(sticker.id, quantity > 0 ? 0 : 1);
+  const incrementQuantity = () => onUpdateQuantity(sticker.id, quantity + 1);
   const stopCardToggle = (event: SyntheticEvent) => event.stopPropagation();
 
   return (
@@ -1263,12 +1574,12 @@ function StickerCard({
       data-testid={`album-card-${sticker.reference}`}
       role="button"
       tabIndex={0}
-      aria-label={`${sticker.reference}, ${statusLabels[status]}, cantidad ${quantity}`}
-      onClick={toggleQuantity}
+      aria-label={`${sticker.reference}, ${statusLabels[status]}, cantidad ${quantity}. Click para agregar una copia.`}
+      onClick={incrementQuantity}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          toggleQuantity();
+          incrementQuantity();
         }
       }}
     >
@@ -1297,11 +1608,11 @@ function StickerCard({
           onChange={(event) => onUpdateQuantity(sticker.id, Number(event.target.value))}
           aria-label={`Cantidad de ${sticker.reference}`}
         />
-        <button className="icon-button" title="Incrementar" aria-label="Incrementar cantidad" onClick={() => onUpdateQuantity(sticker.id, quantity + 1)}>
+        <button className="icon-button" title="Incrementar" aria-label="Incrementar cantidad" onClick={incrementQuantity}>
           <CirclePlus size={18} />
         </button>
-        <button className="icon-button" title={quantity > 0 ? "Marcar faltante" : "Marcar obtenida"} aria-label={quantity > 0 ? "Marcar faltante" : "Marcar obtenida"} onClick={toggleQuantity}>
-          {quantity > 0 ? <X size={17} /> : <Check size={17} />}
+        <button className="icon-button" title="Marcar faltante" aria-label="Marcar faltante" onClick={() => onUpdateQuantity(sticker.id, 0)}>
+          <X size={17} />
         </button>
       </div>
     </article>
