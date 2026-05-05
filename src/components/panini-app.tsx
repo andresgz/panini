@@ -5,18 +5,25 @@ import {
   ArrowDownUp,
   ArrowLeft,
   ArrowRight,
+  Check,
   ChevronDown,
   CircleMinus,
   CirclePlus,
+  Copy,
   Download,
   LayoutDashboard,
   ListChecks,
   LogIn,
   LogOut,
+  Menu,
   Repeat2,
+  Save,
   Search,
+  Settings,
+  Share2,
   Sticker,
   Upload,
+  UserPlus,
   X,
   type LucideIcon
 } from "lucide-react";
@@ -36,7 +43,7 @@ import { getStickerDisplayTitle } from "@/lib/sticker-content";
 import { createSupabaseClient, hasSupabaseConfig, signInWithGoogle, signOut } from "@/lib/supabase";
 import type { Sticker as StickerModel, StickerFilters, StickerType, User, UserStateMap } from "@/types/panini";
 
-type View = "dashboard" | "album" | "missing" | "duplicates" | "compare";
+type View = "dashboard" | "album" | "missing" | "duplicates" | "compare" | "settings";
 type AlbumSortMode = "album" | "alphabetical";
 type AssistantMarkMode = "owned" | "missing";
 type TradeStatus = "requested" | "accepted" | "completed";
@@ -96,7 +103,8 @@ const views: Array<{ id: View; label: string; icon: LucideIcon }> = [
   { id: "missing", label: "Faltantes", icon: ListChecks },
   { id: "duplicates", label: "Repetidas", icon: Repeat2 },
   { id: "compare", label: "Cambios", icon: ArrowDownUp },
-  { id: "dashboard", label: "Estadísticas", icon: LayoutDashboard }
+  { id: "dashboard", label: "Estadísticas", icon: LayoutDashboard },
+  { id: "settings", label: "Configuración", icon: Settings }
 ];
 
 const countryFlagByCode: Record<string, string> = {
@@ -197,10 +205,11 @@ function localStorageKey(userId: string) {
 
 const tradeStorageKey = "panini-2026-trade-processes";
 const visitorProfileKey = "panini-2026-visitor-profile";
+const visitorsStorageKey = "panini-2026-visitors";
+const activeVisitorKey = "panini-2026-active-visitor";
 const filtersSessionKey = "panini-2026-session-filters";
 const albumSortSessionKey = "panini-2026-session-album-sort";
 const assistantSortSessionKey = "panini-2026-session-assistant-sort";
-const localVisitorUserId = "visitor-local";
 
 function readLocalState(userId: string) {
   if (typeof window === "undefined") return {};
@@ -234,20 +243,38 @@ function writeLocalTrades(trades: TradeProcess[]) {
   window.localStorage.setItem(tradeStorageKey, JSON.stringify(trades));
 }
 
-function readVisitorProfile() {
-  if (typeof window === "undefined") return null;
-  const raw = window.localStorage.getItem(visitorProfileKey);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as User;
-  } catch {
-    return null;
+function readAllVisitors(): User[] {
+  if (typeof window === "undefined") return [];
+  const raw = window.localStorage.getItem(visitorsStorageKey);
+  if (raw) {
+    try { return JSON.parse(raw) as User[]; } catch { return []; }
   }
+  // migrate from old single-visitor storage
+  const legacy = window.localStorage.getItem(visitorProfileKey);
+  if (legacy) {
+    try {
+      const old = JSON.parse(legacy) as User;
+      const migrated = [old];
+      window.localStorage.setItem(visitorsStorageKey, JSON.stringify(migrated));
+      return migrated;
+    } catch { return []; }
+  }
+  return [];
 }
 
-function writeVisitorProfile(user: User) {
+function writeAllVisitors(visitors: User[]) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(visitorProfileKey, JSON.stringify(user));
+  window.localStorage.setItem(visitorsStorageKey, JSON.stringify(visitors));
+}
+
+function readActiveVisitorId(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(activeVisitorKey);
+}
+
+function writeActiveVisitorId(id: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(activeVisitorKey, id);
 }
 
 function isAlbumSortMode(value: unknown): value is AlbumSortMode {
@@ -290,6 +317,75 @@ function writeSessionFilters(filters: StickerFilters) {
   window.sessionStorage.setItem(filtersSessionKey, JSON.stringify(filters));
 }
 
+type SharedData = {
+  name: string;
+  missing: string[];
+  duplicates: [string, number][];
+};
+
+function generateInventoryText(
+  mode: "missing" | "duplicates",
+  user: User,
+  missingStickers: StickerModel[],
+  duplicateStickers: StickerModel[],
+  userState: UserStateMap
+): string {
+  const date = new Date().toLocaleDateString("es", { year: "numeric", month: "long", day: "numeric" });
+  const lines: string[] = [];
+
+  if (mode === "missing") {
+    lines.push(`PANINI MUNDIAL 2026 — FALTANTES DE ${user.name.toUpperCase()}`);
+    lines.push(`${date} | ${missingStickers.length} láminas faltantes`);
+    lines.push("");
+    const intro = missingStickers.filter((s) => s.sectionId === "intro");
+    if (intro.length > 0) { lines.push(`INTRODUCCION (${intro.length}):`); lines.push(intro.map((s) => s.reference).join(", ")); lines.push(""); }
+    paniniWorldCup2026Catalog.countries.forEach((country) => {
+      const stickers = missingStickers.filter((s) => s.countryCode === country.code);
+      if (!stickers.length) return;
+      lines.push(`${country.code} — ${country.nameEs} (${stickers.length}):`);
+      lines.push(stickers.map((s) => s.reference).join(", ")); lines.push("");
+    });
+    const museum = missingStickers.filter((s) => s.sectionId === "museum");
+    if (museum.length > 0) { lines.push(`FIFA MUSEUM (${museum.length}):`); lines.push(museum.map((s) => s.reference).join(", ")); }
+  } else {
+    const available = duplicateStickers.reduce((t, s) => t + Math.max(0, getQuantity(userState, s.id) - 1), 0);
+    lines.push(`PANINI MUNDIAL 2026 — REPETIDAS DE ${user.name.toUpperCase()}`);
+    lines.push(`${date} | ${duplicateStickers.length} únicas, ${available} disponibles para cambio`);
+    lines.push("");
+    const fmt = (s: StickerModel) => `${s.reference} (×${Math.max(0, getQuantity(userState, s.id) - 1)})`;
+    const intro = duplicateStickers.filter((s) => s.sectionId === "intro");
+    if (intro.length > 0) { lines.push(`INTRODUCCION (${intro.length}):`); lines.push(intro.map(fmt).join(", ")); lines.push(""); }
+    paniniWorldCup2026Catalog.countries.forEach((country) => {
+      const stickers = duplicateStickers.filter((s) => s.countryCode === country.code);
+      if (!stickers.length) return;
+      lines.push(`${country.code} — ${country.nameEs} (${stickers.length}):`);
+      lines.push(stickers.map(fmt).join(", ")); lines.push("");
+    });
+    const museum = duplicateStickers.filter((s) => s.sectionId === "museum");
+    if (museum.length > 0) { lines.push(`FIFA MUSEUM (${museum.length}):`); lines.push(museum.map(fmt).join(", ")); }
+  }
+  return lines.join("\n");
+}
+
+function generateShareUrl(user: User, userState: UserStateMap): string {
+  if (typeof window === "undefined") return "";
+  const missing = allStickers.filter((s) => getQuantity(userState, s.id) === 0).map((s) => s.reference);
+  const duplicates = allStickers
+    .filter((s) => getQuantity(userState, s.id) > 1)
+    .map((s) => [s.reference, getQuantity(userState, s.id) - 1] as [string, number]);
+  const encoded = btoa(unescape(encodeURIComponent(JSON.stringify({ n: user.name, m: missing, d: duplicates }))));
+  return `${window.location.origin}/?share=${encodeURIComponent(encoded)}`;
+}
+
+function decodeShareData(encoded: string): SharedData | null {
+  try {
+    const data = JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(encoded)))));
+    return { name: data.n ?? "Coleccionista", missing: data.m ?? [], duplicates: data.d ?? [] };
+  } catch {
+    return null;
+  }
+}
+
 async function withTimeout<T>(operation: PromiseLike<T>, timeoutMs: number, message: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -307,6 +403,7 @@ export function PaniniApp() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [view, setView] = useState<View>("album");
   const [isAssistantOpen, setIsAssistantOpen] = useState(false);
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [assistantIndex, setAssistantIndex] = useState(0);
   const [users, setUsers] = useState<User[]>([]);
   const [currentUserId, setCurrentUserId] = useState("");
@@ -316,6 +413,21 @@ export function PaniniApp() {
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [isSessionLoaded, setIsSessionLoaded] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [googleUserId, setGoogleUserId] = useState("");
+  const [initialStartMode, setInitialStartMode] = useState<"pick" | "new" | null>(null);
+  const [isNavOpen, setIsNavOpen] = useState(false);
+  const [shareModalMode, setShareModalMode] = useState<"missing" | "duplicates" | null>(null);
+  const [sharedData, setSharedData] = useState<SharedData | null>(null);
+
+  useEffect(() => {
+    const param = new URLSearchParams(window.location.search).get("share");
+    if (param) {
+      const decoded = decodeShareData(param);
+      if (decoded) setSharedData(decoded);
+    }
+  }, []);
+  const [showImportPrompt, setShowImportPrompt] = useState(false);
+  const importPromptShownRef = useRef(false);
 
   const currentUser = users.find((user) => user.id === currentUserId);
   const compareUser = users.find((user) => user.id === compareUserId && user.id !== currentUserId) ?? users.find((user) => user.id !== currentUserId);
@@ -327,6 +439,7 @@ export function PaniniApp() {
   const progress = useMemo(() => getUserProgress(allStickers, currentState), [currentState]);
   const progressBySection = useMemo(() => getProgressBySection(allStickers, currentState), [currentState]);
   const progressByCountry = useMemo(() => getProgressByCountry(allStickers, currentState), [currentState]);
+  const localVisitors = useMemo(() => users.filter((u) => u.id.startsWith("visitor-")), [users]);
 
   function showPersistenceError(action: string, error: { message: string }) {
     setBackupMessage(`${action}: ${error.message}`);
@@ -351,19 +464,33 @@ export function PaniniApp() {
           const authUser = data.session?.user;
           if (authUser) {
             if (!cancelled) setIsAuthenticated(true);
-            await loadAuthenticatedUser(authUser);
-            if (!cancelled) {
-              setIsSessionLoaded(true);
+            await loadAuthenticatedUser(authUser, false);
+            // Merge local visitors alongside Supabase users
+            const localVisitors = readAllVisitors();
+            if (localVisitors.length > 0 && !cancelled) {
+              setUsers((prev) => {
+                const supabaseIds = new Set(prev.map((u) => u.id));
+                const onlyLocal = localVisitors.filter((v) => !supabaseIds.has(v.id));
+                return onlyLocal.length > 0 ? [...prev, ...onlyLocal] : prev;
+              });
+              setStates((prev) => {
+                const result = { ...prev };
+                localVisitors.forEach((v) => { if (!result[v.id]) result[v.id] = readLocalState(v.id); });
+                return result;
+              });
             }
+            if (!cancelled) setIsSessionLoaded(true);
             return;
           }
         }
 
-        const visitor = readVisitorProfile();
-        if (visitor && !cancelled) {
-          setUsers([visitor]);
-          setCurrentUserId(visitor.id);
-          setStates({ [visitor.id]: readLocalState(visitor.id) });
+        const visitors = readAllVisitors();
+        if (visitors.length > 0 && !cancelled) {
+          setUsers(visitors);
+          setStates(visitors.reduce<Record<string, UserStateMap>>((acc, v) => {
+            acc[v.id] = readLocalState(v.id);
+            return acc;
+          }, {}));
         }
       } catch (error) {
         if (!cancelled) {
@@ -374,12 +501,15 @@ export function PaniniApp() {
       }
     }
 
-    async function loadAuthenticatedUser(authUser: {
-      id: string;
-      email?: string;
-      created_at?: string;
-      user_metadata: Record<string, unknown>;
-    }) {
+    async function loadAuthenticatedUser(
+      authUser: {
+        id: string;
+        email?: string;
+        created_at?: string;
+        user_metadata: Record<string, unknown>;
+      },
+      autoResume = true
+    ) {
       const profile: User = {
         id: authUser.id,
         name:
@@ -394,7 +524,10 @@ export function PaniniApp() {
       };
 
       if (!supabase) return;
-      if (!cancelled) setIsAuthenticated(true);
+      if (!cancelled) {
+        setIsAuthenticated(true);
+        setGoogleUserId(profile.id);
+      }
 
       const { error: profileError } = await withTimeout(
         supabase.from("users").upsert({
@@ -436,9 +569,12 @@ export function PaniniApp() {
       }, {});
 
       setUsers(loadedUsers);
-      setCurrentUserId(profile.id);
-      setCompareUserId(loadedUsers.find((user) => user.id !== profile.id)?.id ?? "");
       setStates((previous) => ({ ...previous, ...loadedStates, [profile.id]: loadedStates[profile.id] ?? {} }));
+
+      if (autoResume) {
+        setCurrentUserId(profile.id);
+        setCompareUserId(loadedUsers.find((user) => user.id !== profile.id)?.id ?? "");
+      }
     }
 
     loadSession();
@@ -447,7 +583,7 @@ export function PaniniApp() {
       supabase?.auth.onAuthStateChange((_event, session) => {
         if (!session?.user) return;
         setIsAuthenticated(true);
-        loadAuthenticatedUser(session.user).then(() => {
+        loadAuthenticatedUser(session.user, true).then(() => {
           setIsSessionLoaded(true);
         });
       }) ?? { data: { subscription: null } };
@@ -468,15 +604,21 @@ export function PaniniApp() {
     const trimmedName = name.trim();
     if (!trimmedName) return;
     const visitor: User = {
-      id: localVisitorUserId,
+      id: `visitor-${Date.now()}`,
       name: trimmedName,
       createdAt: new Date().toISOString()
     };
-    writeVisitorProfile(visitor);
-    setUsers([visitor]);
+    const existing = readAllVisitors();
+    const next = [...existing, visitor];
+    writeAllVisitors(next);
+    writeActiveVisitorId(visitor.id);
+    setUsers((prev) => {
+      const supabaseUsers = googleUserId ? prev.filter((u) => u.id === googleUserId) : [];
+      return [...supabaseUsers, ...next];
+    });
     setCurrentUserId(visitor.id);
     setCompareUserId("");
-    setStates({ [visitor.id]: readLocalState(visitor.id) });
+    setStates((prev) => ({ ...prev, [visitor.id]: readLocalState(visitor.id) }));
     setView("album");
   }
 
@@ -488,16 +630,76 @@ export function PaniniApp() {
   async function handleSignOut() {
     await signOut();
     setIsAuthenticated(false);
-    setUsers([]);
-    setCurrentUserId("");
     setCompareUserId("");
-    setStates({});
     setView("album");
-    const visitor = readVisitorProfile();
-    if (visitor) {
-      setUsers([visitor]);
-      setCurrentUserId(visitor.id);
-      setStates({ [visitor.id]: readLocalState(visitor.id) });
+    const visitors = readAllVisitors();
+    if (visitors.length > 0) {
+      const activeId = readActiveVisitorId();
+      const active = (activeId ? visitors.find((v) => v.id === activeId) : null) ?? visitors[0];
+      setUsers(visitors);
+      setCurrentUserId(active.id);
+      setStates(visitors.reduce<Record<string, UserStateMap>>((acc, v) => {
+        acc[v.id] = readLocalState(v.id);
+        return acc;
+      }, {}));
+    } else {
+      setUsers([]);
+      setCurrentUserId("");
+      setStates({});
+    }
+  }
+
+  function handleDeleteVisitor(userId: string) {
+    const visitors = readAllVisitors();
+    const next = visitors.filter((v) => v.id !== userId);
+    writeAllVisitors(next);
+    window.localStorage.removeItem(localStorageKey(userId));
+    if (readActiveVisitorId() === userId) writeActiveVisitorId(next[0]?.id ?? "");
+    setUsers((prev) => prev.filter((u) => u.id !== userId));
+    setStates((prev) => { const r = { ...prev }; delete r[userId]; return r; });
+  }
+
+  function switchToVisitor(userId: string) {
+    writeActiveVisitorId(userId);
+    setCurrentUserId(userId);
+    setStates((prev) => ({ ...prev, [userId]: prev[userId] ?? readLocalState(userId) }));
+  }
+
+  useEffect(() => {
+    if (!isAuthenticated || !isSessionLoaded || importPromptShownRef.current) return;
+    if (localVisitors.length === 0 || progress.ownedUniqueCount > 0) return;
+    setShowImportPrompt(true);
+    importPromptShownRef.current = true;
+  }, [isAuthenticated, isSessionLoaded, localVisitors.length, progress.ownedUniqueCount]);
+
+  async function handleImportFromVisitor(visitorId: string) {
+    const visitorState = states[visitorId] ?? {};
+    const updates = allStickers.map((s) => ({ stickerId: s.id, quantity: getQuantity(visitorState, s.id) }));
+    await updateQuantities(updates);
+    handleDeleteVisitor(visitorId);
+    setShowImportPrompt(false);
+  }
+
+  function handleUpdateVisitorName(name: string) {
+    if (!currentUser) return;
+    const trimmedName = name.trim();
+    if (!trimmedName || trimmedName === currentUser.name) return;
+    const visitors = readAllVisitors();
+    writeAllVisitors(visitors.map((v) => v.id === currentUser.id ? { ...v, name: trimmedName } : v));
+    setUsers((prev) => prev.map((u) => u.id === currentUser.id ? { ...u, name: trimmedName } : u));
+  }
+
+  function handleNewVisitorFromMenu() {
+    setInitialStartMode("new");
+    setCurrentUserId("");
+  }
+
+  function handleResumeSession(userId: string) {
+    setCurrentUserId(userId);
+    if (userId !== googleUserId) {
+      writeActiveVisitorId(userId);
+    } else {
+      setCompareUserId(users.find((u) => u.id !== userId)?.id ?? "");
     }
   }
 
@@ -639,11 +841,15 @@ export function PaniniApp() {
     }
   }
 
+  if (sharedData) {
+    return <ShareReadView data={sharedData} />;
+  }
+
   if (!isSessionLoaded) {
     return (
       <main className="start-screen">
         <section className="start-panel">
-          <div className="brand start-brand">
+          <div className="start-brand">
             <AppLogo />
             <div>
               <h1>Panini Mundial 2026</h1>
@@ -656,13 +862,30 @@ export function PaniniApp() {
   }
 
   if (!currentUser) {
-    return <VisitorStartScreen onStart={startVisitorSession} />;
+    return (
+      <VisitorStartScreen
+        users={users}
+        googleUserId={googleUserId}
+        initialMode={initialStartMode ?? undefined}
+        onResume={(userId) => { setInitialStartMode(null); handleResumeSession(userId); }}
+        onNewVisitor={(name) => { setInitialStartMode(null); startVisitorSession(name); }}
+        onDeleteUser={handleDeleteVisitor}
+      />
+    );
   }
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
+          <button
+            className="hamburger-button"
+            onClick={() => setIsNavOpen((prev) => !prev)}
+            aria-label={isNavOpen ? "Cerrar menu" : "Abrir menu"}
+            aria-expanded={isNavOpen}
+          >
+            {isNavOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
           <div className="brand">
             <AppLogo />
             <div>
@@ -673,16 +896,23 @@ export function PaniniApp() {
 
           <UserMenu
             user={currentUser}
+            visitors={isAuthenticated ? [] : users}
             isAuthenticated={isAuthenticated}
             onSignIn={handleGoogleSignIn}
             onSignOut={handleSignOut}
+            onSwitchVisitor={switchToVisitor}
+            onNewVisitor={handleNewVisitorFromMenu}
           />
 
-          <nav className="tabs" aria-label="Vistas">
+          <nav className={`tabs ${isNavOpen ? "nav-open" : ""}`} aria-label="Vistas">
             {views.map((item) => {
               const Icon = item.icon;
               return (
-                <button key={item.id} className={`tab ${view === item.id ? "active" : ""}`} onClick={() => setView(item.id)}>
+                <button
+                  key={item.id}
+                  className={`tab ${view === item.id ? "active" : ""}`}
+                  onClick={() => { setView(item.id); setIsNavOpen(false); }}
+                >
                   <Icon size={16} />
                   {item.label}
                 </button>
@@ -691,14 +921,27 @@ export function PaniniApp() {
           </nav>
 
           <div className="user-area">
+            {isAuthenticated ? (
+              <span className="autosave-label">
+                <Check size={14} />
+                Guardado automático
+              </span>
+            ) : (
+              <button className="button" onClick={() => setIsSaveModalOpen(true)}>
+                <Save size={16} />
+                Guardar
+              </button>
+            )}
             <button className="button primary" onClick={() => setIsAssistantOpen(true)}>
               Abrir asistente
             </button>
-            <button className="icon-button" onClick={exportInventory} aria-label="Exportar inventario" title="Exportar inventario">
+            <button className="button" onClick={exportInventory} aria-label="Exportar inventario">
               <Download size={17} />
+              Exportar
             </button>
-            <button className="icon-button" onClick={() => importInputRef.current?.click()} aria-label="Importar inventario" title="Importar inventario">
+            <button className="button" onClick={() => importInputRef.current?.click()} aria-label="Importar inventario">
               <Upload size={17} />
+              Importar
             </button>
             <input ref={importInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importInventory} />
           </div>
@@ -729,21 +972,39 @@ export function PaniniApp() {
         ) : null}
 
         {view === "missing" ? (
-          <AlbumView
-            stickers={missingStickers}
-            userState={currentState}
-            onUpdateQuantity={updateQuantity}
-            onUpdateQuantities={updateQuantities}
-          />
+          <>
+            <div className="inventory-actions-bar">
+              <span className="inventory-count">{missingStickers.length} láminas faltantes</span>
+              <button className="button small" onClick={() => setShareModalMode("missing")}>
+                <Share2 size={14} />
+                Compartir lista
+              </button>
+            </div>
+            <AlbumView
+              stickers={missingStickers}
+              userState={currentState}
+              onUpdateQuantity={updateQuantity}
+              onUpdateQuantities={updateQuantities}
+            />
+          </>
         ) : null}
 
         {view === "duplicates" ? (
-          <AlbumView
-            stickers={duplicateStickers}
-            userState={currentState}
-            onUpdateQuantity={updateQuantity}
-            onUpdateQuantities={updateQuantities}
-          />
+          <>
+            <div className="inventory-actions-bar">
+              <span className="inventory-count">{duplicateStickers.length} láminas repetidas</span>
+              <button className="button small" onClick={() => setShareModalMode("duplicates")}>
+                <Share2 size={14} />
+                Compartir lista
+              </button>
+            </div>
+            <AlbumView
+              stickers={duplicateStickers}
+              userState={currentState}
+              onUpdateQuantity={updateQuantity}
+              onUpdateQuantities={updateQuantities}
+            />
+          </>
         ) : null}
 
         {view === "compare" && compareUser ? (
@@ -768,7 +1029,44 @@ export function PaniniApp() {
             <div className="empty">No hay otros usuarios disponibles para comparar todavia.</div>
           </section>
         ) : null}
+
+        {view === "settings" ? (
+          <SettingsView
+            user={currentUser}
+            isAuthenticated={isAuthenticated}
+            localVisitors={localVisitors}
+            states={states}
+            onUpdateName={handleUpdateVisitorName}
+            onImportFromVisitor={handleImportFromVisitor}
+          />
+        ) : null}
       </div>
+      {shareModalMode ? (
+        <InventoryShareModal
+          mode={shareModalMode}
+          user={currentUser}
+          missingStickers={missingStickers}
+          duplicateStickers={duplicateStickers}
+          currentState={currentState}
+          onClose={() => setShareModalMode(null)}
+        />
+      ) : null}
+      {showImportPrompt && localVisitors.length > 0 ? (
+        <ImportVisitorModal
+          localVisitors={localVisitors}
+          states={states}
+          hasExistingData={progress.ownedUniqueCount > 0}
+          onImport={handleImportFromVisitor}
+          onSkip={() => setShowImportPrompt(false)}
+        />
+      ) : null}
+      {isSaveModalOpen ? (
+        <SaveModal
+          onSignIn={handleGoogleSignIn}
+          onDownload={() => { exportInventory(); setIsSaveModalOpen(false); }}
+          onClose={() => setIsSaveModalOpen(false)}
+        />
+      ) : null}
       {isAssistantOpen ? (
         <AlbumAssistantModal
           baseStickers={allStickers}
@@ -784,10 +1082,31 @@ export function PaniniApp() {
   );
 }
 
-function VisitorStartScreen({ onStart }: { onStart: (name: string) => void }) {
-  const [mode, setMode] = useState<"start" | "visitor">("start");
+function VisitorStartScreen({
+  users,
+  googleUserId,
+  initialMode,
+  onResume,
+  onNewVisitor,
+  onDeleteUser
+}: {
+  users: User[];
+  googleUserId: string;
+  initialMode?: "pick" | "new";
+  onResume: (userId: string) => void;
+  onNewVisitor: (name: string) => void;
+  onDeleteUser: (userId: string) => void;
+}) {
+  const [mode, setMode] = useState<"pick" | "new">(() =>
+    initialMode ?? (users.length === 0 ? "new" : "pick")
+  );
   const [name, setName] = useState("");
   const [error, setError] = useState("");
+  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (users.length === 0) setMode("new");
+  }, [users.length]);
 
   async function handleGoogleStart() {
     const result = await signInWithGoogle();
@@ -797,33 +1116,92 @@ function VisitorStartScreen({ onStart }: { onStart: (name: string) => void }) {
   return (
     <main className="start-screen">
       <section className="start-panel">
-        <div className="brand start-brand">
+        <div className="start-brand">
           <AppLogo />
           <div>
             <h1>Panini Mundial 2026</h1>
-            <p>Inventario local del album base</p>
+            <p>{mode === "pick" ? "Selecciona tu perfil para continuar" : "Inventario local del album base"}</p>
           </div>
         </div>
 
-        {mode === "start" ? (
-          <div className="start-actions">
-            <button className="button primary" onClick={() => setMode("visitor")}>
-              Iniciar como visitante
-            </button>
-            <button className="button" disabled={!hasSupabaseConfig} onClick={handleGoogleStart}>
-              <LogIn size={16} />
-              Iniciar sesion con Google
-            </button>
-            {error ? <span className="form-error">{error}</span> : null}
-          </div>
+        {mode === "pick" ? (
+          <>
+            <div className="session-list">
+              {users.map((user) => {
+                const isGoogle = user.id === googleUserId;
+                const initials = user.name.split(" ").map((p) => p[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "U";
+                const avatarStyle = user.avatarUrl ? { backgroundImage: `url(${user.avatarUrl})` } : undefined;
+                return (
+                  <div key={user.id}>
+                    {deletingUserId === user.id ? (
+                      <div className="session-delete-confirm">
+                        <span>¿Eliminar la sesión de <strong>{user.name}</strong>? Se perderán todos los datos guardados localmente.</span>
+                        <div className="session-delete-actions">
+                          <button className="button small" type="button" onClick={() => setDeletingUserId(null)}>
+                            Cancelar
+                          </button>
+                          <button
+                            className="button small session-delete-ok"
+                            type="button"
+                            onClick={() => { onDeleteUser(user.id); setDeletingUserId(null); }}
+                          >
+                            Eliminar
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="session-card-row">
+                        <button className="session-card" type="button" onClick={() => onResume(user.id)}>
+                          <span className={`user-avatar large ${user.avatarUrl ? "has-image" : ""}`} style={avatarStyle} aria-hidden="true">
+                            {user.avatarUrl ? null : initials}
+                          </span>
+                          <div className="session-card-info">
+                            <strong>{user.name}</strong>
+                            <span>{isGoogle ? user.email ?? "Google" : "Visitante local"}</span>
+                          </div>
+                        </button>
+                        {!isGoogle ? (
+                          <button
+                            className="session-delete-btn"
+                            type="button"
+                            aria-label={`Eliminar sesion de ${user.name}`}
+                            onClick={() => setDeletingUserId(user.id)}
+                          >
+                            <X size={14} />
+                          </button>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {!googleUserId ? (
+              <div className="start-google-tip">
+                <strong>¿Por qué iniciar sesión con Google?</strong>
+                <ul>
+                  <li>Tu álbum se sincroniza en la nube automáticamente</li>
+                  <li>Genera un enlace público con tus faltantes y repetidas para compartir con amigos</li>
+                  <li>Conecta con otros coleccionistas para coordinar intercambios</li>
+                </ul>
+              </div>
+            ) : null}
+            <div className="start-actions">
+              <button className="button" type="button" onClick={() => setMode("new")}>
+                <UserPlus size={16} />
+                Nuevo visitante
+              </button>
+              {!googleUserId ? (
+                <button className="button" type="button" disabled={!hasSupabaseConfig} onClick={handleGoogleStart}>
+                  <LogIn size={16} />
+                  Iniciar sesion con Google
+                </button>
+              ) : null}
+              {error ? <span className="form-error">{error}</span> : null}
+            </div>
+          </>
         ) : (
-          <form
-            className="visitor-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              onStart(name);
-            }}
-          >
+          <form className="visitor-form" onSubmit={(event) => { event.preventDefault(); onNewVisitor(name); }}>
             <label>
               Nombre del coleccionista
               <input className="input" value={name} onChange={(event) => setName(event.target.value)} autoFocus />
@@ -831,6 +1209,27 @@ function VisitorStartScreen({ onStart }: { onStart: (name: string) => void }) {
             <button className="button primary" disabled={!name.trim()}>
               Crear album vacio
             </button>
+            {users.length > 0 ? (
+              <button className="button" type="button" onClick={() => setMode("pick")}>
+                Volver
+              </button>
+            ) : (
+              <>
+                <div className="start-google-tip">
+                  <strong>¿Por qué iniciar sesión con Google?</strong>
+                  <ul>
+                    <li>Tu álbum se sincroniza en la nube automáticamente</li>
+                    <li>Genera un enlace público con tus faltantes y repetidas para compartir con amigos</li>
+                    <li>Conecta con otros coleccionistas para coordinar intercambios</li>
+                  </ul>
+                </div>
+                <button className="button" type="button" disabled={!hasSupabaseConfig} onClick={handleGoogleStart}>
+                  <LogIn size={16} />
+                  Iniciar sesion con Google
+                </button>
+              </>
+            )}
+            {error ? <span className="form-error">{error}</span> : null}
           </form>
         )}
       </section>
@@ -838,17 +1237,382 @@ function VisitorStartScreen({ onStart }: { onStart: (name: string) => void }) {
   );
 }
 
-function UserMenu({
+function SaveModal({
+  onSignIn,
+  onDownload,
+  onClose
+}: {
+  onSignIn: () => void;
+  onDownload: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Guardar progreso">
+      <div className="save-modal">
+        <div className="save-modal-header">
+          <div>
+            <h2>Guardar tu progreso</h2>
+            <p>
+              Inicia sesión con Google para sincronizar tu album en la nube y no perder ningún cambio.
+              Si prefieres continuar sin cuenta, puedes descargar un backup local en cualquier momento.
+            </p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Cerrar">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="save-modal-actions">
+          <button className="button primary" disabled={!hasSupabaseConfig} onClick={onSignIn}>
+            <LogIn size={16} />
+            Iniciar sesión con Google
+          </button>
+          <div className="save-modal-divider">o</div>
+          <button className="button" onClick={onDownload}>
+            <Download size={16} />
+            Descargar backup local
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShareReadView({ data }: { data: SharedData }) {
+  const missingStickerObjects = useMemo(
+    () => data.missing.map((ref) => allStickers.find((s) => s.reference === ref)).filter(Boolean) as StickerModel[],
+    [data.missing]
+  );
+  const duplicateStickerObjects = useMemo(
+    () => data.duplicates.map(([ref, qty]) => ({ sticker: allStickers.find((s) => s.reference === ref), qty })).filter((d) => d.sticker) as { sticker: StickerModel; qty: number }[],
+    [data.duplicates]
+  );
+  function groupBySection(stickers: StickerModel[]) {
+    const intro = stickers.filter((s) => s.sectionId === "intro");
+    const museum = stickers.filter((s) => s.sectionId === "museum");
+    const byCountry = paniniWorldCup2026Catalog.countries
+      .map((country) => ({ country, stickers: stickers.filter((s) => s.countryCode === country.code) }))
+      .filter((g) => g.stickers.length > 0);
+    return { intro, museum, byCountry };
+  }
+  const missingGroups = groupBySection(missingStickerObjects);
+
+  return (
+    <main className="share-read-view">
+      <div className="share-read-inner">
+        <header className="share-read-header">
+          <AppLogo />
+          <div>
+            <h1>Álbum de {data.name}</h1>
+            <p>Panini FIFA Mundial 2026</p>
+          </div>
+        </header>
+
+        <div className="grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+          <Metric label="Faltantes" value={missingStickerObjects.length} />
+          <Metric label="Disp. para cambio" value={duplicateStickerObjects.reduce((t, d) => t + d.qty, 0)} />
+        </div>
+
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Faltantes</h2>
+            <span className="badge">{missingStickerObjects.length}</span>
+          </div>
+          <div className="share-group-list">
+            {missingGroups.intro.length > 0 && (
+              <div className="share-group"><strong>Introduccion ({missingGroups.intro.length})</strong><p>{missingGroups.intro.map((s) => s.reference).join(", ")}</p></div>
+            )}
+            {missingGroups.byCountry.map(({ country, stickers }) => (
+              <div key={country.code} className="share-group">
+                <strong>{country.code} — {country.nameEs} ({stickers.length})</strong>
+                <p>{stickers.map((s) => s.reference).join(", ")}</p>
+              </div>
+            ))}
+            {missingGroups.museum.length > 0 && (
+              <div className="share-group"><strong>FIFA Museum ({missingGroups.museum.length})</strong><p>{missingGroups.museum.map((s) => s.reference).join(", ")}</p></div>
+            )}
+            {missingStickerObjects.length === 0 && <div className="empty">¡Álbum completo!</div>}
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Disponibles para cambio</h2>
+            <span className="badge">{duplicateStickerObjects.length}</span>
+          </div>
+          <div className="share-group-list">
+            {duplicateStickerObjects.length > 0 ? (
+              <div className="share-group"><p>{duplicateStickerObjects.map(({ sticker, qty }) => `${sticker.reference} (×${qty})`).join(", ")}</p></div>
+            ) : (
+              <div className="empty">Sin repetidas disponibles.</div>
+            )}
+          </div>
+        </section>
+
+        <a href="/" className="button primary share-cta">Crear mi propio álbum →</a>
+      </div>
+    </main>
+  );
+}
+
+function InventoryShareModal({
+  mode,
+  user,
+  missingStickers,
+  duplicateStickers,
+  currentState,
+  onClose
+}: {
+  mode: "missing" | "duplicates";
+  user: User;
+  missingStickers: StickerModel[];
+  duplicateStickers: StickerModel[];
+  currentState: UserStateMap;
+  onClose: () => void;
+}) {
+  const [tab, setTab] = useState<"text" | "link">("text");
+  const [copied, setCopied] = useState(false);
+  const text = useMemo(
+    () => generateInventoryText(mode, user, missingStickers, duplicateStickers, currentState),
+    [mode, user, missingStickers, duplicateStickers, currentState]
+  );
+  const url = useMemo(() => generateShareUrl(user, currentState), [user, currentState]);
+
+  function handleCopy(content: string) {
+    navigator.clipboard.writeText(content).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Compartir inventario">
+      <div className="share-modal">
+        <div className="share-modal-header">
+          <div>
+            <h2>{mode === "missing" ? "Lista de faltantes" : "Lista de repetidas"}</h2>
+            <p>{user.name}</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Cerrar"><X size={18} /></button>
+        </div>
+        <div className="share-tab-bar">
+          <button className={`share-tab ${tab === "text" ? "active" : ""}`} type="button" onClick={() => { setTab("text"); setCopied(false); }}>Texto</button>
+          <button className={`share-tab ${tab === "link" ? "active" : ""}`} type="button" onClick={() => { setTab("link"); setCopied(false); }}>Enlace público</button>
+        </div>
+        {tab === "text" ? (
+          <div className="share-content">
+            <textarea className="share-textarea" value={text} readOnly />
+            <button className="button primary" onClick={() => handleCopy(text)}>
+              <Copy size={14} />
+              {copied ? "¡Copiado!" : "Copiar texto"}
+            </button>
+          </div>
+        ) : (
+          <div className="share-content">
+            <p className="share-link-desc">Comparte este enlace. Tus amigos verán tus láminas faltantes y las que tienes disponibles para cambio.</p>
+            <div className="share-url-row">
+              <input className="input" value={url} readOnly />
+              <button className="button primary" onClick={() => handleCopy(url)}>
+                <Copy size={14} />
+                {copied ? "¡Copiado!" : "Copiar"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ImportVisitorModal({
+  localVisitors,
+  states,
+  hasExistingData,
+  onImport,
+  onSkip
+}: {
+  localVisitors: User[];
+  states: Record<string, UserStateMap>;
+  hasExistingData: boolean;
+  onImport: (visitorId: string) => Promise<void>;
+  onSkip: () => void;
+}) {
+  const [selectedId, setSelectedId] = useState(localVisitors[0]?.id ?? "");
+  const [confirmed, setConfirmed] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+
+  const selectedState = states[selectedId] ?? {};
+  const ownedCount = allStickers.filter((s) => getQuantity(selectedState, s.id) > 0).length;
+
+  async function handleImport() {
+    setIsImporting(true);
+    try { await onImport(selectedId); } finally { setIsImporting(false); }
+  }
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Importar datos de visitante">
+      <div className="save-modal">
+        <div className="save-modal-header">
+          <div>
+            <h2>Importar datos de visitante</h2>
+            <p>Tu album de Google está vacío. Puedes importar los datos de un visitante local para continuar donde lo dejaste.</p>
+          </div>
+        </div>
+        <div className="import-visitor-form">
+          <label className="import-visitor-label">
+            Visitante a importar
+            <select className="select" value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
+              {localVisitors.map((v) => {
+                const count = allStickers.filter((s) => getQuantity(states[v.id] ?? {}, s.id) > 0).length;
+                return <option key={v.id} value={v.id}>{v.name} — {count} láminas obtenidas</option>;
+              })}
+            </select>
+          </label>
+          <div className="import-warning">
+            <strong>⚠ Advertencia:</strong> {hasExistingData
+              ? "Se sobrescribirán todos los datos actuales de tu cuenta Google con los del visitante seleccionado."
+              : "Se importarán todos los datos del visitante a tu cuenta Google."
+            } El perfil del visitante será eliminado. Esta acción no se puede deshacer.
+          </div>
+          <label className="toggle import-confirm-toggle">
+            <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+            Entiendo y quiero proceder ({ownedCount} láminas)
+          </label>
+        </div>
+        <div className="save-modal-actions">
+          <button className="button primary" disabled={!confirmed || isImporting} onClick={handleImport}>
+            {isImporting ? "Importando..." : "Importar y eliminar visitante"}
+          </button>
+          <div className="save-modal-divider">o</div>
+          <button className="button" onClick={onSkip}>Omitir por ahora</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsView({
   user,
   isAuthenticated,
-  onSignIn,
-  onSignOut
+  localVisitors,
+  states,
+  onUpdateName,
+  onImportFromVisitor
 }: {
   user: User;
   isAuthenticated: boolean;
+  localVisitors: User[];
+  states: Record<string, UserStateMap>;
+  onUpdateName: (name: string) => void;
+  onImportFromVisitor: (visitorId: string) => Promise<void>;
+}) {
+  const [editName, setEditName] = useState(user.name);
+  const [nameSaved, setNameSaved] = useState(false);
+  const [selectedVisitorId, setSelectedVisitorId] = useState(localVisitors[0]?.id ?? "");
+  const [importConfirmed, setImportConfirmed] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const hasExistingData = allStickers.some((s) => getQuantity(states[user.id] ?? {}, s.id) > 0);
+
+  function handleSaveName(e: React.FormEvent) {
+    e.preventDefault();
+    onUpdateName(editName);
+    setNameSaved(true);
+    setTimeout(() => setNameSaved(false), 2000);
+  }
+
+  async function handleImport() {
+    setIsImporting(true);
+    try { await onImportFromVisitor(selectedVisitorId); } finally { setIsImporting(false); }
+  }
+
+  return (
+    <div className="settings-layout">
+      <section className="panel">
+        <div className="panel-header"><h2>Perfil</h2></div>
+        <div className="settings-section">
+          <div className="settings-field">
+            <span className={`user-avatar large ${user.avatarUrl ? "has-image" : ""}`}
+              style={user.avatarUrl ? { backgroundImage: `url(${user.avatarUrl})` } : undefined}
+              aria-hidden="true">
+              {user.avatarUrl ? null : user.name.split(" ").map((p) => p[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "U"}
+            </span>
+            <div className="settings-field-info">
+              {!isAuthenticated ? (
+                <form className="settings-name-form" onSubmit={handleSaveName}>
+                  <label className="settings-label">
+                    Nombre
+                    <input className="input" value={editName} onChange={(e) => setEditName(e.target.value)} />
+                  </label>
+                  <button className="button primary small" type="submit" disabled={!editName.trim() || editName === user.name}>
+                    {nameSaved ? "Guardado" : "Guardar"}
+                  </button>
+                </form>
+              ) : (
+                <div>
+                  <strong>{user.name}</strong>
+                  <span style={{ color: "var(--muted)", fontSize: 13 }}>{user.email ?? "Google"}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {localVisitors.length > 0 ? (
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Importar datos de visitante</h2>
+          </div>
+          <div className="settings-section">
+            <p className="settings-description">
+              Reemplaza los datos de tu cuenta con los de un visitante local. El visitante seleccionado será eliminado tras la importación.
+            </p>
+            <label className="settings-label">
+              Visitante
+              <select className="select" value={selectedVisitorId} onChange={(e) => { setSelectedVisitorId(e.target.value); setImportConfirmed(false); }}>
+                {localVisitors.map((v) => {
+                  const count = allStickers.filter((s) => getQuantity(states[v.id] ?? {}, s.id) > 0).length;
+                  return <option key={v.id} value={v.id}>{v.name} — {count} láminas</option>;
+                })}
+              </select>
+            </label>
+            <div className="import-warning">
+              <strong>⚠ Advertencia:</strong> {hasExistingData
+                ? "Tu cuenta ya tiene datos. Se sobrescribirán completamente con los del visitante seleccionado."
+                : "Se importarán todos los datos del visitante seleccionado."
+              } El perfil del visitante será eliminado. Esta acción no se puede deshacer.
+            </div>
+            <label className="toggle">
+              <input type="checkbox" checked={importConfirmed} onChange={(e) => setImportConfirmed(e.target.checked)} />
+              Entiendo, quiero importar y eliminar este visitante
+            </label>
+            <button className="button primary" disabled={!importConfirmed || isImporting} onClick={handleImport} style={{ justifySelf: "start" }}>
+              {isImporting ? "Importando..." : "Importar datos"}
+            </button>
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function UserMenu({
+  user,
+  visitors,
+  isAuthenticated,
+  onSignIn,
+  onSignOut,
+  onSwitchVisitor,
+  onNewVisitor
+}: {
+  user: User;
+  visitors: User[];
+  isAuthenticated: boolean;
   onSignIn: () => void;
   onSignOut: () => void;
+  onSwitchVisitor: (userId: string) => void;
+  onNewVisitor: () => void;
 }) {
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+
   const initials = user.name
     .split(" ")
     .map((part) => part[0])
@@ -858,8 +1622,17 @@ function UserMenu({
     .toUpperCase() || "U";
   const avatarStyle = user.avatarUrl ? { backgroundImage: `url(${user.avatarUrl})` } : undefined;
 
+  function closeMenu() {
+    if (detailsRef.current) detailsRef.current.open = false;
+  }
+
+  function handleSwitchVisitor(userId: string) {
+    onSwitchVisitor(userId);
+    closeMenu();
+  }
+
   return (
-    <details className="user-menu">
+    <details ref={detailsRef} className="user-menu">
       <summary className="user-menu-trigger" aria-label="Menu de usuario">
         <span className={`user-avatar ${user.avatarUrl ? "has-image" : ""}`} style={avatarStyle} aria-hidden="true">
           {user.avatarUrl ? null : initials}
@@ -877,6 +1650,33 @@ function UserMenu({
             <span>{isAuthenticated ? user.email ?? "Google" : "Sesion visitante"}</span>
           </div>
         </div>
+
+        {!isAuthenticated && visitors.length > 1 ? (
+          <div className="visitor-switcher">
+            {visitors.map((visitor) => (
+              <button
+                key={visitor.id}
+                className={`visitor-switcher-item ${visitor.id === user.id ? "active" : ""}`}
+                type="button"
+                onClick={() => handleSwitchVisitor(visitor.id)}
+              >
+                <span className="visitor-switcher-initials" aria-hidden="true">
+                  {visitor.name[0]?.toUpperCase() ?? "V"}
+                </span>
+                <span className="visitor-switcher-name">{visitor.name}</span>
+                {visitor.id === user.id ? <Check size={14} /> : null}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {!isAuthenticated ? (
+          <button className="user-menu-action" type="button" onClick={() => { closeMenu(); onNewVisitor(); }}>
+            <UserPlus size={16} />
+            Nuevo visitante
+          </button>
+        ) : null}
+
         {isAuthenticated ? (
           <button className="user-menu-action" type="button" onClick={onSignOut}>
             <LogOut size={16} />
@@ -1245,6 +2045,14 @@ function AlbumAssistantModal({
     onUpdateQuantity(targetSticker.id, getQuantity(userState, targetSticker.id) + 1);
   }, [markMode, onUpdateQuantity, userState]);
 
+  const applyAlternativeAction = useCallback((targetSticker: StickerModel) => {
+    if (markMode === "missing") {
+      onUpdateQuantity(targetSticker.id, 1);
+      return;
+    }
+    onUpdateQuantity(targetSticker.id, 0);
+  }, [markMode, onUpdateQuantity]);
+
   function selectAndApply(targetSticker: StickerModel) {
     const nextIndex = stickers.findIndex((groupSticker) => groupSticker.id === targetSticker.id);
     if (nextIndex >= 0) onIndexChange(nextIndex);
@@ -1254,7 +2062,10 @@ function AlbumAssistantModal({
   async function startMissingMode() {
     setIsPreparingMissingMode(true);
     try {
-      await onUpdateQuantities(baseStickers.map((baseSticker) => ({ stickerId: baseSticker.id, quantity: 1 })));
+      const isEmpty = !baseStickers.some((s) => getQuantity(userState, s.id) > 0);
+      if (isEmpty) {
+        await onUpdateQuantities(baseStickers.map((s) => ({ stickerId: s.id, quantity: 1 })));
+      }
       setMarkMode("missing");
     } finally {
       setIsPreparingMissingMode(false);
@@ -1325,7 +2136,7 @@ function AlbumAssistantModal({
             </button>
             <button className="assistant-mode-card emphasized" type="button" onClick={() => setIsConfirmingMissingMode(true)} disabled={isPreparingMissingMode}>
               <strong>{isPreparingMissingMode ? "Preparando album..." : "Marcar las que me faltan"}</strong>
-              <span>Primero se marca todo como obtenido. Cada click o espacio deja esa lamina en faltante.</span>
+              <span>Si el album está vacío, se marca todo con cantidad 1. Si ya tiene datos, se conserva el estado. Cada click o espacio deja esa lamina en faltante.</span>
             </button>
           </div>
 
@@ -1407,23 +2218,33 @@ function AlbumAssistantModal({
               const groupStickerQuantity = getQuantity(userState, groupSticker.id);
               const groupStickerStatus = getStickerStatus(groupStickerQuantity);
               const isCurrent = groupSticker.id === sticker.id;
+              const altLabel = markMode === "missing" ? "Marcar como obtenida" : "Marcar como faltante";
 
               return (
-                <button
-                  key={groupSticker.id}
-                  className={`assistant-sticker-tile ${groupStickerStatus} ${isCurrent ? "current" : ""}`}
-                  type="button"
-                  aria-current={isCurrent ? "true" : undefined}
-                  aria-label={`${groupSticker.reference}, ${statusLabels[groupStickerStatus]}, cantidad ${groupStickerQuantity}. ${primaryActionLabel}`}
-                  onClick={() => selectAndApply(groupSticker)}
-                >
-                  <span className="assistant-tile-reference">{groupSticker.reference}</span>
-                  <span className="assistant-tile-title">{getStickerDisplayTitle(groupSticker)}</span>
-                  <span className="assistant-tile-meta">
-                    <span className={`status-dot ${groupStickerStatus}`} aria-hidden="true" />
-                    {statusLabels[groupStickerStatus]} · {groupStickerQuantity}
-                  </span>
-                </button>
+                <div key={groupSticker.id} className="assistant-sticker-tile-wrap">
+                  <button
+                    className={`assistant-sticker-tile ${groupStickerStatus} ${isCurrent ? "current" : ""}`}
+                    type="button"
+                    aria-current={isCurrent ? "true" : undefined}
+                    aria-label={`${groupSticker.reference}, ${statusLabels[groupStickerStatus]}, cantidad ${groupStickerQuantity}. ${primaryActionLabel}`}
+                    onClick={() => selectAndApply(groupSticker)}
+                  >
+                    <span className="assistant-tile-reference">{groupSticker.reference}</span>
+                    <span className="assistant-tile-title">{getStickerDisplayTitle(groupSticker)}</span>
+                    <span className="assistant-tile-meta">
+                      <span className={`status-dot ${groupStickerStatus}`} aria-hidden="true" />
+                      {statusLabels[groupStickerStatus]} · {groupStickerQuantity}
+                    </span>
+                  </button>
+                  <button
+                    className="assistant-tile-alt"
+                    type="button"
+                    aria-label={`${altLabel}: ${groupSticker.reference}`}
+                    onClick={(e) => { e.stopPropagation(); applyAlternativeAction(groupSticker); }}
+                  >
+                    {markMode === "missing" ? <Check size={11} /> : <X size={11} />}
+                  </button>
+                </div>
               );
             })}
           </div>
