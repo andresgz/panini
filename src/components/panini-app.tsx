@@ -1452,7 +1452,12 @@ function ShareReadView({
     [data.missing]
   );
   const duplicateStickerObjects = useMemo(
-    () => data.duplicates.map(([ref, qty]) => ({ sticker: allStickers.find((s) => s.reference === ref), qty })).filter((d) => d.sticker) as { sticker: StickerModel; qty: number }[],
+    () => data.duplicates
+      .map(([ref, qty]) => ({
+        sticker: allStickers.find((s) => s.reference === ref),
+        qty: normalizeQuantity(Number(qty))
+      }))
+      .filter((duplicate) => duplicate.sticker && duplicate.qty > 0) as { sticker: StickerModel; qty: number }[],
     [data.duplicates]
   );
   const filteredDuplicateStickerObjects = useMemo(() => {
@@ -1499,6 +1504,8 @@ function ShareReadView({
     if (data.userId) return `${window.location.origin}/?user=${encodeURIComponent(data.userId)}`;
     return `${window.location.origin}/?share=${encodeURIComponent(encodeSharePayload({ n: data.name, m: data.missing, d: data.duplicates }))}`;
   }, [data]);
+  const missingAnchorUrl = `${baseShareUrl}#faltantes`;
+  const duplicatesAnchorUrl = `${baseShareUrl}#disponibles`;
   const requestUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
     const parts = data.userId
@@ -1552,15 +1559,33 @@ function ShareReadView({
           <Metric label="Disp. para cambio" value={duplicateAvailableCount} />
         </div>
 
-        <section className="panel">
+        <nav className="share-sticky-nav" aria-label="Navegacion del enlace publico">
+          <a href="#faltantes">
+            Faltantes
+            <span>{missingStickerObjects.length}</span>
+          </a>
+          <a href="#disponibles">
+            Disponibles
+            <span>{duplicateStickerObjects.length}</span>
+          </a>
+        </nav>
+
+        <section id="faltantes" className="panel share-anchor-section">
           <div className="panel-header">
             <h2>Faltantes</h2>
-            <span className="badge">{selectedMissing.length}/{missingStickerObjects.length}</span>
+            <div className="share-section-actions">
+              <span className="badge">{selectedMissing.length}/{missingStickerObjects.length}</span>
+              <a className="button small" href="#faltantes" onClick={() => navigator.clipboard.writeText(missingAnchorUrl).catch(() => {})}>
+                <Copy size={14} />
+                Link
+              </a>
+            </div>
           </div>
           <div className="share-group-list">
             {missingGroups.intro.length > 0 ? (
               <ShareStickerGroup
                 title="Introduccion"
+                icon="🏆"
                 stickers={missingGroups.intro}
                 selectedRefs={selectedMissingRefs}
                 onToggle={(reference) => toggleSelected(setSelectedMissingRefs, reference)}
@@ -1570,6 +1595,7 @@ function ShareReadView({
               <ShareStickerGroup
                 key={country.code}
                 title={`${country.code} - ${country.nameEs}`}
+                icon={countryFlagByCode[country.code] ?? "⚽"}
                 stickers={stickers}
                 selectedRefs={selectedMissingRefs}
                 onToggle={(reference) => toggleSelected(setSelectedMissingRefs, reference)}
@@ -1578,6 +1604,7 @@ function ShareReadView({
             {missingGroups.museum.length > 0 ? (
               <ShareStickerGroup
                 title="FIFA Museum"
+                icon="🏛️"
                 stickers={missingGroups.museum}
                 selectedRefs={selectedMissingRefs}
                 onToggle={(reference) => toggleSelected(setSelectedMissingRefs, reference)}
@@ -1587,10 +1614,16 @@ function ShareReadView({
           </div>
         </section>
 
-        <section className="panel">
+        <section id="disponibles" className="panel share-anchor-section">
           <div className="panel-header">
             <h2>Disponibles para cambio</h2>
-            <span className="badge">{filteredDuplicateStickerObjects.length}/{duplicateStickerObjects.length}</span>
+            <div className="share-section-actions">
+              <span className="badge">{filteredDuplicateStickerObjects.length}/{duplicateStickerObjects.length}</span>
+              <a className="button small" href="#disponibles" onClick={() => navigator.clipboard.writeText(duplicatesAnchorUrl).catch(() => {})}>
+                <Copy size={14} />
+                Link
+              </a>
+            </div>
           </div>
 
           <div className="share-filter-bar">
@@ -1642,6 +1675,7 @@ function ShareReadView({
                 {duplicateGroups.intro.length > 0 ? (
                   <ShareDuplicateGroup
                     title="Introduccion"
+                    icon="🏆"
                     duplicates={duplicateGroups.intro}
                     selectedRefs={selectedDuplicateRefs}
                     onToggle={(reference) => toggleSelected(setSelectedDuplicateRefs, reference)}
@@ -1651,6 +1685,7 @@ function ShareReadView({
                   <ShareDuplicateGroup
                     key={country.code}
                     title={`${country.code} - ${country.nameEs}`}
+                    icon={countryFlagByCode[country.code] ?? "⚽"}
                     duplicates={stickers}
                     selectedRefs={selectedDuplicateRefs}
                     onToggle={(reference) => toggleSelected(setSelectedDuplicateRefs, reference)}
@@ -1659,6 +1694,7 @@ function ShareReadView({
                 {duplicateGroups.museum.length > 0 ? (
                   <ShareDuplicateGroup
                     title="FIFA Museum"
+                    icon="🏛️"
                     duplicates={duplicateGroups.museum}
                     selectedRefs={selectedDuplicateRefs}
                     onToggle={(reference) => toggleSelected(setSelectedDuplicateRefs, reference)}
@@ -1704,11 +1740,13 @@ function ShareReadView({
 
 function ShareStickerGroup({
   title,
+  icon,
   stickers,
   selectedRefs,
   onToggle
 }: {
   title: string;
+  icon: string;
   stickers: StickerModel[];
   selectedRefs: Set<string>;
   onToggle: (reference: string) => void;
@@ -1716,7 +1754,10 @@ function ShareStickerGroup({
   return (
     <section className="share-duplicate-group">
       <div className="share-duplicate-group-header">
-        <strong>{title}</strong>
+        <div className="share-group-title">
+          <span className="share-group-icon" aria-hidden="true">{icon}</span>
+          <strong>{title}</strong>
+        </div>
         <span>{stickers.length} refs</span>
       </div>
       <div className="share-duplicate-grid">
@@ -1739,11 +1780,13 @@ function ShareStickerGroup({
 
 function ShareDuplicateGroup({
   title,
+  icon,
   duplicates,
   selectedRefs,
   onToggle
 }: {
   title: string;
+  icon: string;
   duplicates: Array<{ sticker: StickerModel; qty: number }>;
   selectedRefs: Set<string>;
   onToggle: (reference: string) => void;
@@ -1753,7 +1796,10 @@ function ShareDuplicateGroup({
   return (
     <section className="share-duplicate-group">
       <div className="share-duplicate-group-header">
-        <strong>{title}</strong>
+        <div className="share-group-title">
+          <span className="share-group-icon" aria-hidden="true">{icon}</span>
+          <strong>{title}</strong>
+        </div>
         <span>{duplicates.length} refs / {availableCount} disp.</span>
       </div>
       <div className="share-duplicate-grid">

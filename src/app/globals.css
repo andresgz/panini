@@ -633,6 +633,67 @@ button:disabled {
   min-height: 32px;
 }
 
+.share-sticky-nav {
+  position: sticky;
+  top: 8px;
+  z-index: 8;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 24px rgba(0, 30, 104, 0.08);
+  padding: 6px;
+  backdrop-filter: blur(12px);
+}
+
+.share-sticky-nav a {
+  display: inline-flex;
+  flex: 1;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 7px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.share-sticky-nav a:hover {
+  background: var(--surface-2);
+}
+
+.share-sticky-nav span {
+  display: inline-flex;
+  min-width: 24px;
+  min-height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.share-anchor-section {
+  scroll-margin-top: 74px;
+}
+
+.share-section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.share-section-actions .button {
+  text-decoration: none;
+}
+
 .share-filter-summary {
   display: flex;
   gap: 6px;
@@ -679,6 +740,31 @@ button:disabled {
 .share-duplicate-group-header span {
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
+}
+
+.share-group-title {
+  display: inline-flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+}
+
+.share-group-icon {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  font-size: 18px;
+}
+
+.share-group-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
