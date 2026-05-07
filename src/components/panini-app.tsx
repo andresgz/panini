@@ -1444,12 +1444,17 @@ function ShareReadView({
     offeredStickerIds: string[];
   }) => TradeProcess;
 }) {
+  const [missingFilters, setMissingFilters] = useState<StickerFilters>({});
   const [duplicateFilters, setDuplicateFilters] = useState<StickerFilters>({});
   const [selectedMissingRefs, setSelectedMissingRefs] = useState<Set<string>>(() => new Set(readCommaRefsParam("offer")));
   const [selectedDuplicateRefs, setSelectedDuplicateRefs] = useState<Set<string>>(() => new Set(readCommaRefsParam("want")));
   const missingStickerObjects = useMemo(
     () => data.missing.map((ref) => allStickers.find((s) => s.reference === ref)).filter(Boolean) as StickerModel[],
     [data.missing]
+  );
+  const filteredMissingStickerObjects = useMemo(
+    () => getFilteredStickers(missingStickerObjects, missingFilters),
+    [missingFilters, missingStickerObjects]
   );
   const duplicateStickerObjects = useMemo(
     () => data.duplicates
@@ -1493,7 +1498,7 @@ function ShareReadView({
   const duplicateGroups = groupDuplicatesBySection(filteredDuplicateStickerObjects);
   const duplicateAvailableCount = duplicateStickerObjects.reduce((total, duplicate) => total + duplicate.qty, 0);
   const filteredDuplicateAvailableCount = filteredDuplicateStickerObjects.reduce((total, duplicate) => total + duplicate.qty, 0);
-  const missingGroups = groupBySection(missingStickerObjects);
+  const missingGroups = groupBySection(filteredMissingStickerObjects);
   const selectedMissing = missingStickerObjects.filter((sticker) => selectedMissingRefs.has(sticker.reference));
   const selectedDuplicates = duplicateStickerObjects.filter(({ sticker }) => selectedDuplicateRefs.has(sticker.reference));
   const selectedCount = selectedMissing.length + selectedDuplicates.length;
@@ -1581,6 +1586,15 @@ function ShareReadView({
               </a>
             </div>
           </div>
+          <ShareStickerFilterBar
+            filters={missingFilters}
+            onChange={setMissingFilters}
+            onReset={() => setMissingFilters({})}
+          />
+          <div className="share-filter-summary">
+            <strong>{filteredMissingStickerObjects.length}</strong>
+            <span>faltantes encontradas de {missingStickerObjects.length}</span>
+          </div>
           <div className="share-group-list">
             {missingGroups.intro.length > 0 ? (
               <ShareStickerGroup
@@ -1610,7 +1624,8 @@ function ShareReadView({
                 onToggle={(reference) => toggleSelected(setSelectedMissingRefs, reference)}
               />
             ) : null}
-            {missingStickerObjects.length === 0 && <div className="empty">¡Álbum completo!</div>}
+            {missingStickerObjects.length === 0 ? <div className="empty">¡Álbum completo!</div> : null}
+            {missingStickerObjects.length > 0 && filteredMissingStickerObjects.length === 0 ? <div className="empty">No hay faltantes con esos filtros.</div> : null}
           </div>
         </section>
 
@@ -1626,43 +1641,11 @@ function ShareReadView({
             </div>
           </div>
 
-          <div className="share-filter-bar">
-            <div className="filter-search">
-              <Search size={16} className="filter-search-icon" />
-              <input
-                className="input"
-                placeholder="Buscar referencia, pais, titulo o tipo"
-                value={duplicateFilters.query ?? ""}
-                onChange={(event) => updateDuplicateFilters({ ...duplicateFilters, query: event.target.value })}
-              />
-            </div>
-            <select className="select" value={duplicateFilters.sectionId ?? "all"} onChange={(event) => updateDuplicateFilters({ ...duplicateFilters, sectionId: event.target.value })}>
-              <option value="all">Todas las secciones</option>
-              {paniniWorldCup2026Catalog.sections.map((section) => (
-                <option key={section.id} value={section.id}>{section.name}</option>
-              ))}
-            </select>
-            <select className="select" value={duplicateFilters.countryCode ?? "all"} onChange={(event) => updateDuplicateFilters({ ...duplicateFilters, countryCode: event.target.value })}>
-              <option value="all">Todos los paises</option>
-              {paniniWorldCup2026Catalog.countries.map((country) => (
-                <option key={country.code} value={country.code}>{country.code} - {country.nameEs}</option>
-              ))}
-            </select>
-            <select className="select" value={duplicateFilters.type ?? "all"} onChange={(event) => updateDuplicateFilters({ ...duplicateFilters, type: event.target.value as StickerFilters["type"] })}>
-              <option value="all">Todos los tipos</option>
-              {Object.entries(typeLabels).map(([type, label]) => (
-                <option key={type} value={type}>{label}</option>
-              ))}
-            </select>
-            <label className="toggle">
-              <input type="checkbox" checked={Boolean(duplicateFilters.onlyFoil)} onChange={(event) => updateDuplicateFilters({ ...duplicateFilters, onlyFoil: event.target.checked })} />
-              Solo foil
-            </label>
-            <button className="button" onClick={() => setDuplicateFilters({})}>
-              <X size={16} />
-              Limpiar
-            </button>
-          </div>
+          <ShareStickerFilterBar
+            filters={duplicateFilters}
+            onChange={updateDuplicateFilters}
+            onReset={() => setDuplicateFilters({})}
+          />
 
           <div className="share-filter-summary">
             <strong>{filteredDuplicateAvailableCount}</strong>
@@ -1735,6 +1718,56 @@ function ShareReadView({
         <a href="/" className="button primary share-cta">Crear mi propio álbum →</a>
       </div>
     </main>
+  );
+}
+
+function ShareStickerFilterBar({
+  filters,
+  onChange,
+  onReset
+}: {
+  filters: StickerFilters;
+  onChange: (filters: StickerFilters) => void;
+  onReset: () => void;
+}) {
+  return (
+    <div className="share-filter-bar">
+      <div className="filter-search">
+        <Search size={16} className="filter-search-icon" />
+        <input
+          className="input"
+          placeholder="Buscar referencia, pais, titulo o tipo"
+          value={filters.query ?? ""}
+          onChange={(event) => onChange({ ...filters, query: event.target.value })}
+        />
+      </div>
+      <select className="select" value={filters.sectionId ?? "all"} onChange={(event) => onChange({ ...filters, sectionId: event.target.value })}>
+        <option value="all">Todas las secciones</option>
+        {paniniWorldCup2026Catalog.sections.map((section) => (
+          <option key={section.id} value={section.id}>{section.name}</option>
+        ))}
+      </select>
+      <select className="select" value={filters.countryCode ?? "all"} onChange={(event) => onChange({ ...filters, countryCode: event.target.value })}>
+        <option value="all">Todos los paises</option>
+        {paniniWorldCup2026Catalog.countries.map((country) => (
+          <option key={country.code} value={country.code}>{country.code} - {country.nameEs}</option>
+        ))}
+      </select>
+      <select className="select" value={filters.type ?? "all"} onChange={(event) => onChange({ ...filters, type: event.target.value as StickerFilters["type"] })}>
+        <option value="all">Todos los tipos</option>
+        {Object.entries(typeLabels).map(([type, label]) => (
+          <option key={type} value={type}>{label}</option>
+        ))}
+      </select>
+      <label className="toggle">
+        <input type="checkbox" checked={Boolean(filters.onlyFoil)} onChange={(event) => onChange({ ...filters, onlyFoil: event.target.checked })} />
+        Solo foil
+      </label>
+      <button className="button" onClick={onReset}>
+        <X size={16} />
+        Limpiar
+      </button>
+    </div>
   );
 }
 
