@@ -34,6 +34,11 @@ create policy "Users can read users"
   to authenticated
   using (true);
 
+create policy "Anyone can read public user profiles"
+  on public.users for select
+  to anon
+  using (true);
+
 create policy "Users can insert their own profile"
   on public.users for insert
   to authenticated
@@ -48,6 +53,11 @@ create policy "Users can update their own profile"
 create policy "Users can read all sticker states for comparisons"
   on public.user_sticker_states for select
   to authenticated
+  using (true);
+
+create policy "Anyone can read public sticker states"
+  on public.user_sticker_states for select
+  to anon
   using (true);
 
 create policy "Users can insert their own sticker states"

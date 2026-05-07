@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type Dispatch, type SetStateAction, type SyntheticEvent } from "react";
 import {
   ArrowDownUp,
   ArrowLeft,
@@ -318,10 +318,19 @@ function writeSessionFilters(filters: StickerFilters) {
 }
 
 type SharedData = {
+  userId?: string;
   name: string;
   missing: string[];
   duplicates: [string, number][];
 };
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function encodeSharePayload(payload: unknown) {
+  return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+}
 
 function generateInventoryText(
   mode: "missing" | "duplicates",
@@ -367,23 +376,47 @@ function generateInventoryText(
   return lines.join("\n");
 }
 
+function generateFullInventoryShareText(user: User, missingStickers: StickerModel[], duplicateStickers: StickerModel[], userState: UserStateMap, url: string) {
+  const missingText = generateInventoryText("missing", user, missingStickers, duplicateStickers, userState);
+  const duplicatesText = generateInventoryText("duplicates", user, missingStickers, duplicateStickers, userState);
+  return `${missingText}\n\n${duplicatesText}\n\nVer mi album para cambios:\n${url}`;
+}
+
 function generateShareUrl(user: User, userState: UserStateMap): string {
   if (typeof window === "undefined") return "";
+  if (isUuid(user.id)) return `${window.location.origin}/?user=${encodeURIComponent(user.id)}`;
+
   const missing = allStickers.filter((s) => getQuantity(userState, s.id) === 0).map((s) => s.reference);
   const duplicates = allStickers
     .filter((s) => getQuantity(userState, s.id) > 1)
     .map((s) => [s.reference, getQuantity(userState, s.id) - 1] as [string, number]);
-  const encoded = btoa(unescape(encodeURIComponent(JSON.stringify({ n: user.name, m: missing, d: duplicates }))));
+  const encoded = encodeSharePayload({ n: user.name, m: missing, d: duplicates });
   return `${window.location.origin}/?share=${encodeURIComponent(encoded)}`;
 }
 
 function decodeShareData(encoded: string): SharedData | null {
   try {
     const data = JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(encoded)))));
-    return { name: data.n ?? "Coleccionista", missing: data.m ?? [], duplicates: data.d ?? [] };
+    return {
+      userId: typeof data.u === "string" ? data.u : undefined,
+      name: data.n ?? "Coleccionista",
+      missing: data.m ?? [],
+      duplicates: data.d ?? []
+    };
   } catch {
     return null;
   }
+}
+
+function buildWhatsAppUrl(message: string) {
+  return `https://wa.me/?text=${encodeURIComponent(message)}`;
+}
+
+function readCommaRefsParam(name: string) {
+  if (typeof window === "undefined") return [];
+  const raw = new URLSearchParams(window.location.search).get(name);
+  if (!raw) return [];
+  return raw.split(",").map((ref) => ref.trim().toUpperCase()).filter(Boolean);
 }
 
 async function withTimeout<T>(operation: PromiseLike<T>, timeoutMs: number, message: string): Promise<T> {
@@ -418,13 +451,63 @@ export function PaniniApp() {
   const [isNavOpen, setIsNavOpen] = useState(false);
   const [shareModalMode, setShareModalMode] = useState<"missing" | "duplicates" | null>(null);
   const [sharedData, setSharedData] = useState<SharedData | null>(null);
+  const [isPublicShareLoading, setIsPublicShareLoading] = useState(false);
+  const [publicShareError, setPublicShareError] = useState("");
 
   useEffect(() => {
-    const param = new URLSearchParams(window.location.search).get("share");
-    if (param) {
-      const decoded = decodeShareData(param);
+    const params = new URLSearchParams(window.location.search);
+    const encodedShare = params.get("share");
+    const userId = params.get("user");
+
+    if (encodedShare) {
+      const decoded = decodeShareData(encodedShare);
       if (decoded) setSharedData(decoded);
+      return;
     }
+
+    if (!userId || !isUuid(userId)) return;
+    const publicUserId = userId;
+    let cancelled = false;
+    const supabase = createSupabaseClient();
+    if (!supabase) {
+      setPublicShareError("Supabase no esta configurado para cargar este enlace publico.");
+      return;
+    }
+    const publicSupabase = supabase;
+
+    async function loadPublicShare() {
+      setIsPublicShareLoading(true);
+      setPublicShareError("");
+      const [{ data: userRow, error: userError }, { data: stateRows, error: stateError }] = await Promise.all([
+        publicSupabase.from("users").select("id,name").eq("id", publicUserId).maybeSingle(),
+        publicSupabase.from("user_sticker_states").select("sticker_id,quantity").eq("user_id", publicUserId)
+      ]);
+      if (cancelled) return;
+      setIsPublicShareLoading(false);
+
+      if (userError || stateError || !userRow) {
+        setPublicShareError("No se pudo cargar el inventario publico. Revisa que el usuario exista y que las politicas de lectura publica esten activas en Supabase.");
+        return;
+      }
+
+      const state = (stateRows ?? []).reduce<UserStateMap>((acc, row) => {
+        acc[row.sticker_id] = row.quantity;
+        return acc;
+      }, {});
+      setSharedData({
+        userId: publicUserId,
+        name: userRow.name ?? "Coleccionista",
+        missing: allStickers.filter((sticker) => getQuantity(state, sticker.id) === 0).map((sticker) => sticker.reference),
+        duplicates: allStickers
+          .filter((sticker) => getQuantity(state, sticker.id) > 1)
+          .map((sticker) => [sticker.reference, getQuantity(state, sticker.id) - 1] as [string, number])
+      });
+    }
+
+    loadPublicShare();
+    return () => {
+      cancelled = true;
+    };
   }, []);
   const [showImportPrompt, setShowImportPrompt] = useState(false);
   const importPromptShownRef = useRef(false);
@@ -601,8 +684,14 @@ export function PaniniApp() {
   }, [currentUserId, isAuthenticated]);
 
   function startVisitorSession(name: string) {
+    const visitor = createVisitorProfile(name);
+    if (!visitor) return;
+    setView("album");
+  }
+
+  function createVisitorProfile(name: string) {
     const trimmedName = name.trim();
-    if (!trimmedName) return;
+    if (!trimmedName) return null;
     const visitor: User = {
       id: `visitor-${Date.now()}`,
       name: trimmedName,
@@ -619,7 +708,39 @@ export function PaniniApp() {
     setCurrentUserId(visitor.id);
     setCompareUserId("");
     setStates((prev) => ({ ...prev, [visitor.id]: readLocalState(visitor.id) }));
-    setView("album");
+    return visitor;
+  }
+
+  function createPublicTradeRequest({
+    requester,
+    ownerName,
+    requestedStickerIds,
+    offeredStickerIds
+  }: {
+    requester: User;
+    ownerName: string;
+    requestedStickerIds: string[];
+    offeredStickerIds: string[];
+  }) {
+    const ownerId = sharedData?.userId ?? `shared-${ownerName.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "coleccionista"}`;
+    const ownerUser: User = {
+      id: ownerId,
+      name: ownerName,
+      createdAt: new Date().toISOString()
+    };
+    setUsers((previous) => (previous.some((user) => user.id === ownerId) ? previous : [...previous, ownerUser]));
+    const trade: TradeProcess = {
+      id: `trade-${Date.now()}`,
+      requesterId: requester.id,
+      friendId: ownerId,
+      requestedStickerIds,
+      offeredStickerIds,
+      status: "requested",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    writeLocalTrades([trade, ...readLocalTrades()]);
+    return trade;
   }
 
   async function handleGoogleSignIn() {
@@ -842,7 +963,33 @@ export function PaniniApp() {
   }
 
   if (sharedData) {
-    return <ShareReadView data={sharedData} />;
+    return (
+      <ShareReadView
+        data={sharedData}
+        currentUser={currentUser}
+        isAuthenticated={isAuthenticated}
+        isSessionLoaded={isSessionLoaded}
+        onCreateVisitor={createVisitorProfile}
+        onCreateTradeRequest={createPublicTradeRequest}
+      />
+    );
+  }
+
+  if (isPublicShareLoading || publicShareError) {
+    return (
+      <main className="share-read-view">
+        <div className="share-read-inner">
+          <header className="share-read-header">
+            <AppLogo />
+            <div>
+              <h1>Panini Mundial 2026</h1>
+              <p>{isPublicShareLoading ? "Cargando inventario publico..." : "No se pudo cargar el enlace"}</p>
+            </div>
+          </header>
+          {publicShareError ? <div className="backup-message">{publicShareError}</div> : null}
+        </div>
+      </main>
+    );
   }
 
   if (!isSessionLoaded) {
@@ -1251,10 +1398,10 @@ function SaveModal({
       <div className="save-modal">
         <div className="save-modal-header">
           <div>
-            <h2>Guardar tu progreso</h2>
+            <h2>No pierdas tus cambios</h2>
             <p>
-              Inicia sesión con Google para sincronizar tu album en la nube y no perder ningún cambio.
-              Si prefieres continuar sin cuenta, puedes descargar un backup local en cualquier momento.
+              Para conservar tu inventario entre dispositivos y no perder los cambios, inicia sesión con Google.
+              Si prefieres seguir como visitante, tus datos quedan en este navegador y puedes guardarlos localmente descargando el archivo de backup.
             </p>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Cerrar">
@@ -1269,7 +1416,7 @@ function SaveModal({
           <div className="save-modal-divider">o</div>
           <button className="button" onClick={onDownload}>
             <Download size={16} />
-            Descargar backup local
+            Descargar archivo local
           </button>
         </div>
       </div>
@@ -1277,7 +1424,29 @@ function SaveModal({
   );
 }
 
-function ShareReadView({ data }: { data: SharedData }) {
+function ShareReadView({
+  data,
+  currentUser,
+  isAuthenticated,
+  isSessionLoaded,
+  onCreateVisitor,
+  onCreateTradeRequest
+}: {
+  data: SharedData;
+  currentUser?: User;
+  isAuthenticated: boolean;
+  isSessionLoaded: boolean;
+  onCreateVisitor: (name: string) => User | null;
+  onCreateTradeRequest: (request: {
+    requester: User;
+    ownerName: string;
+    requestedStickerIds: string[];
+    offeredStickerIds: string[];
+  }) => TradeProcess;
+}) {
+  const [duplicateFilters, setDuplicateFilters] = useState<StickerFilters>({});
+  const [selectedMissingRefs, setSelectedMissingRefs] = useState<Set<string>>(() => new Set(readCommaRefsParam("offer")));
+  const [selectedDuplicateRefs, setSelectedDuplicateRefs] = useState<Set<string>>(() => new Set(readCommaRefsParam("want")));
   const missingStickerObjects = useMemo(
     () => data.missing.map((ref) => allStickers.find((s) => s.reference === ref)).filter(Boolean) as StickerModel[],
     [data.missing]
@@ -1286,6 +1455,11 @@ function ShareReadView({ data }: { data: SharedData }) {
     () => data.duplicates.map(([ref, qty]) => ({ sticker: allStickers.find((s) => s.reference === ref), qty })).filter((d) => d.sticker) as { sticker: StickerModel; qty: number }[],
     [data.duplicates]
   );
+  const filteredDuplicateStickerObjects = useMemo(() => {
+    const filteredIds = new Set(getFilteredStickers(duplicateStickerObjects.map(({ sticker }) => sticker), duplicateFilters).map((sticker) => sticker.id));
+    return duplicateStickerObjects.filter(({ sticker }) => filteredIds.has(sticker.id));
+  }, [duplicateFilters, duplicateStickerObjects]);
+
   function groupBySection(stickers: StickerModel[]) {
     const intro = stickers.filter((s) => s.sectionId === "intro");
     const museum = stickers.filter((s) => s.sectionId === "museum");
@@ -1294,7 +1468,73 @@ function ShareReadView({ data }: { data: SharedData }) {
       .filter((g) => g.stickers.length > 0);
     return { intro, museum, byCountry };
   }
+
+  function groupDuplicatesBySection(duplicates: Array<{ sticker: StickerModel; qty: number }>) {
+    const intro = duplicates.filter(({ sticker }) => sticker.sectionId === "intro");
+    const museum = duplicates.filter(({ sticker }) => sticker.sectionId === "museum");
+    const byCountry = paniniWorldCup2026Catalog.countries
+      .map((country) => ({
+        country,
+        stickers: duplicates.filter(({ sticker }) => sticker.countryCode === country.code)
+      }))
+      .filter((group) => group.stickers.length > 0);
+    return { intro, museum, byCountry };
+  }
+
+  function updateDuplicateFilters(nextFilters: StickerFilters) {
+    setDuplicateFilters(nextFilters);
+  }
+
+  const duplicateGroups = groupDuplicatesBySection(filteredDuplicateStickerObjects);
+  const duplicateAvailableCount = duplicateStickerObjects.reduce((total, duplicate) => total + duplicate.qty, 0);
+  const filteredDuplicateAvailableCount = filteredDuplicateStickerObjects.reduce((total, duplicate) => total + duplicate.qty, 0);
   const missingGroups = groupBySection(missingStickerObjects);
+  const selectedMissing = missingStickerObjects.filter((sticker) => selectedMissingRefs.has(sticker.reference));
+  const selectedDuplicates = duplicateStickerObjects.filter(({ sticker }) => selectedDuplicateRefs.has(sticker.reference));
+  const selectedCount = selectedMissing.length + selectedDuplicates.length;
+  const requestedCount = selectedDuplicates.length;
+  const offeredCount = selectedMissing.length;
+  const baseShareUrl = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    if (data.userId) return `${window.location.origin}/?user=${encodeURIComponent(data.userId)}`;
+    return `${window.location.origin}/?share=${encodeURIComponent(encodeSharePayload({ n: data.name, m: data.missing, d: data.duplicates }))}`;
+  }, [data]);
+  const requestUrl = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    const parts = data.userId
+      ? [`user=${encodeURIComponent(data.userId)}`]
+      : [`share=${encodeURIComponent(encodeSharePayload({ n: data.name, m: data.missing, d: data.duplicates }))}`];
+    const wantRefs = Array.from(selectedDuplicateRefs).sort();
+    const offerRefs = Array.from(selectedMissingRefs).sort();
+    if (wantRefs.length > 0) parts.push(`want=${wantRefs.join(",")}`);
+    if (offerRefs.length > 0) parts.push(`offer=${offerRefs.join(",")}`);
+    return `${window.location.origin}/?${parts.join("&")}`;
+  }, [data, selectedDuplicateRefs, selectedMissingRefs]);
+  const requestMessage = useMemo(() => {
+    const lines = [`Hola ${data.name}, vi tu album Panini Mundial 2026 y quiero solicitar un intercambio.`];
+    if (selectedDuplicates.length > 0) {
+      lines.push(`Me interesan estas laminas disponibles: ${selectedDuplicates.map(({ sticker }) => sticker.reference).join(", ")}.`);
+    }
+    if (selectedMissing.length > 0) {
+      lines.push(`Yo podria ayudarte con estas faltantes tuyas: ${selectedMissing.map((sticker) => sticker.reference).join(", ")}.`);
+    }
+    lines.push(`Solicitud: ${requestUrl}`);
+    return lines.join("\n");
+  }, [data.name, requestUrl, selectedDuplicates, selectedMissing]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.history.replaceState(null, "", selectedCount > 0 ? requestUrl : baseShareUrl);
+  }, [baseShareUrl, requestUrl, selectedCount]);
+
+  function toggleSelected(setter: Dispatch<SetStateAction<Set<string>>>, reference: string) {
+    setter((previous) => {
+      const next = new Set(previous);
+      if (next.has(reference)) next.delete(reference);
+      else next.add(reference);
+      return next;
+    });
+  }
 
   return (
     <main className="share-read-view">
@@ -1309,27 +1549,40 @@ function ShareReadView({ data }: { data: SharedData }) {
 
         <div className="grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
           <Metric label="Faltantes" value={missingStickerObjects.length} />
-          <Metric label="Disp. para cambio" value={duplicateStickerObjects.reduce((t, d) => t + d.qty, 0)} />
+          <Metric label="Disp. para cambio" value={duplicateAvailableCount} />
         </div>
 
         <section className="panel">
           <div className="panel-header">
             <h2>Faltantes</h2>
-            <span className="badge">{missingStickerObjects.length}</span>
+            <span className="badge">{selectedMissing.length}/{missingStickerObjects.length}</span>
           </div>
           <div className="share-group-list">
-            {missingGroups.intro.length > 0 && (
-              <div className="share-group"><strong>Introduccion ({missingGroups.intro.length})</strong><p>{missingGroups.intro.map((s) => s.reference).join(", ")}</p></div>
-            )}
+            {missingGroups.intro.length > 0 ? (
+              <ShareStickerGroup
+                title="Introduccion"
+                stickers={missingGroups.intro}
+                selectedRefs={selectedMissingRefs}
+                onToggle={(reference) => toggleSelected(setSelectedMissingRefs, reference)}
+              />
+            ) : null}
             {missingGroups.byCountry.map(({ country, stickers }) => (
-              <div key={country.code} className="share-group">
-                <strong>{country.code} — {country.nameEs} ({stickers.length})</strong>
-                <p>{stickers.map((s) => s.reference).join(", ")}</p>
-              </div>
+              <ShareStickerGroup
+                key={country.code}
+                title={`${country.code} - ${country.nameEs}`}
+                stickers={stickers}
+                selectedRefs={selectedMissingRefs}
+                onToggle={(reference) => toggleSelected(setSelectedMissingRefs, reference)}
+              />
             ))}
-            {missingGroups.museum.length > 0 && (
-              <div className="share-group"><strong>FIFA Museum ({missingGroups.museum.length})</strong><p>{missingGroups.museum.map((s) => s.reference).join(", ")}</p></div>
-            )}
+            {missingGroups.museum.length > 0 ? (
+              <ShareStickerGroup
+                title="FIFA Museum"
+                stickers={missingGroups.museum}
+                selectedRefs={selectedMissingRefs}
+                onToggle={(reference) => toggleSelected(setSelectedMissingRefs, reference)}
+              />
+            ) : null}
             {missingStickerObjects.length === 0 && <div className="empty">¡Álbum completo!</div>}
           </div>
         </section>
@@ -1337,20 +1590,306 @@ function ShareReadView({ data }: { data: SharedData }) {
         <section className="panel">
           <div className="panel-header">
             <h2>Disponibles para cambio</h2>
-            <span className="badge">{duplicateStickerObjects.length}</span>
+            <span className="badge">{filteredDuplicateStickerObjects.length}/{duplicateStickerObjects.length}</span>
           </div>
+
+          <div className="share-filter-bar">
+            <div className="filter-search">
+              <Search size={16} className="filter-search-icon" />
+              <input
+                className="input"
+                placeholder="Buscar referencia, pais, titulo o tipo"
+                value={duplicateFilters.query ?? ""}
+                onChange={(event) => updateDuplicateFilters({ ...duplicateFilters, query: event.target.value })}
+              />
+            </div>
+            <select className="select" value={duplicateFilters.sectionId ?? "all"} onChange={(event) => updateDuplicateFilters({ ...duplicateFilters, sectionId: event.target.value })}>
+              <option value="all">Todas las secciones</option>
+              {paniniWorldCup2026Catalog.sections.map((section) => (
+                <option key={section.id} value={section.id}>{section.name}</option>
+              ))}
+            </select>
+            <select className="select" value={duplicateFilters.countryCode ?? "all"} onChange={(event) => updateDuplicateFilters({ ...duplicateFilters, countryCode: event.target.value })}>
+              <option value="all">Todos los paises</option>
+              {paniniWorldCup2026Catalog.countries.map((country) => (
+                <option key={country.code} value={country.code}>{country.code} - {country.nameEs}</option>
+              ))}
+            </select>
+            <select className="select" value={duplicateFilters.type ?? "all"} onChange={(event) => updateDuplicateFilters({ ...duplicateFilters, type: event.target.value as StickerFilters["type"] })}>
+              <option value="all">Todos los tipos</option>
+              {Object.entries(typeLabels).map(([type, label]) => (
+                <option key={type} value={type}>{label}</option>
+              ))}
+            </select>
+            <label className="toggle">
+              <input type="checkbox" checked={Boolean(duplicateFilters.onlyFoil)} onChange={(event) => updateDuplicateFilters({ ...duplicateFilters, onlyFoil: event.target.checked })} />
+              Solo foil
+            </label>
+            <button className="button" onClick={() => setDuplicateFilters({})}>
+              <X size={16} />
+              Limpiar
+            </button>
+          </div>
+
+          <div className="share-filter-summary">
+            <strong>{filteredDuplicateAvailableCount}</strong>
+            <span>disponibles en {filteredDuplicateStickerObjects.length} referencias</span>
+          </div>
+
           <div className="share-group-list">
-            {duplicateStickerObjects.length > 0 ? (
-              <div className="share-group"><p>{duplicateStickerObjects.map(({ sticker, qty }) => `${sticker.reference} (×${qty})`).join(", ")}</p></div>
+            {filteredDuplicateStickerObjects.length > 0 ? (
+              <>
+                {duplicateGroups.intro.length > 0 ? (
+                  <ShareDuplicateGroup
+                    title="Introduccion"
+                    duplicates={duplicateGroups.intro}
+                    selectedRefs={selectedDuplicateRefs}
+                    onToggle={(reference) => toggleSelected(setSelectedDuplicateRefs, reference)}
+                  />
+                ) : null}
+                {duplicateGroups.byCountry.map(({ country, stickers }) => (
+                  <ShareDuplicateGroup
+                    key={country.code}
+                    title={`${country.code} - ${country.nameEs}`}
+                    duplicates={stickers}
+                    selectedRefs={selectedDuplicateRefs}
+                    onToggle={(reference) => toggleSelected(setSelectedDuplicateRefs, reference)}
+                  />
+                ))}
+                {duplicateGroups.museum.length > 0 ? (
+                  <ShareDuplicateGroup
+                    title="FIFA Museum"
+                    duplicates={duplicateGroups.museum}
+                    selectedRefs={selectedDuplicateRefs}
+                    onToggle={(reference) => toggleSelected(setSelectedDuplicateRefs, reference)}
+                  />
+                ) : null}
+              </>
             ) : (
-              <div className="empty">Sin repetidas disponibles.</div>
+              <div className="empty">{duplicateStickerObjects.length > 0 ? "No hay disponibles con esos filtros." : "Sin repetidas disponibles."}</div>
             )}
           </div>
         </section>
 
+        <div className="share-request-bar">
+          <div>
+            <strong>{requestedCount}</strong>
+            <span>pedidas / {offeredCount} ofrecidas</span>
+          </div>
+          <a className={`button primary ${selectedCount === 0 ? "disabled-link" : ""}`} href="#solicitud-intercambio" aria-disabled={selectedCount === 0}>
+            Solicitar Intercambio
+          </a>
+        </div>
+
+        {selectedCount > 0 ? (
+          <TradeRequestPanel
+            ownerName={data.name}
+            currentUser={currentUser}
+            isAuthenticated={isAuthenticated}
+            isSessionLoaded={isSessionLoaded}
+            requestUrl={requestUrl}
+            baseRequestMessage={requestMessage}
+            selectedMissing={selectedMissing}
+            selectedDuplicates={selectedDuplicates}
+            onCreateVisitor={onCreateVisitor}
+            onCreateTradeRequest={onCreateTradeRequest}
+          />
+        ) : null}
+
         <a href="/" className="button primary share-cta">Crear mi propio álbum →</a>
       </div>
     </main>
+  );
+}
+
+function ShareStickerGroup({
+  title,
+  stickers,
+  selectedRefs,
+  onToggle
+}: {
+  title: string;
+  stickers: StickerModel[];
+  selectedRefs: Set<string>;
+  onToggle: (reference: string) => void;
+}) {
+  return (
+    <section className="share-duplicate-group">
+      <div className="share-duplicate-group-header">
+        <strong>{title}</strong>
+        <span>{stickers.length} refs</span>
+      </div>
+      <div className="share-duplicate-grid">
+        {stickers.map((sticker) => {
+          const isSelected = selectedRefs.has(sticker.reference);
+          return (
+            <button key={sticker.id} className={`share-duplicate-card selectable ${isSelected ? "selected" : ""}`} type="button" onClick={() => onToggle(sticker.reference)}>
+              <div>
+                <strong>{sticker.reference}</strong>
+                <span>{getStickerDisplayTitle(sticker)}</span>
+              </div>
+              {isSelected ? <span className="share-selection-check"><Check size={14} /></span> : null}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function ShareDuplicateGroup({
+  title,
+  duplicates,
+  selectedRefs,
+  onToggle
+}: {
+  title: string;
+  duplicates: Array<{ sticker: StickerModel; qty: number }>;
+  selectedRefs: Set<string>;
+  onToggle: (reference: string) => void;
+}) {
+  const availableCount = duplicates.reduce((total, duplicate) => total + duplicate.qty, 0);
+
+  return (
+    <section className="share-duplicate-group">
+      <div className="share-duplicate-group-header">
+        <strong>{title}</strong>
+        <span>{duplicates.length} refs / {availableCount} disp.</span>
+      </div>
+      <div className="share-duplicate-grid">
+        {duplicates.map(({ sticker, qty }) => (
+          <button key={sticker.id} className={`share-duplicate-card selectable ${selectedRefs.has(sticker.reference) ? "selected" : ""}`} type="button" onClick={() => onToggle(sticker.reference)}>
+            <div>
+              <strong>{sticker.reference}</strong>
+              <span>{getStickerDisplayTitle(sticker)}</span>
+            </div>
+            <span className="share-duplicate-qty">x{qty}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function TradeRequestPanel({
+  ownerName,
+  currentUser,
+  isAuthenticated,
+  isSessionLoaded,
+  requestUrl,
+  baseRequestMessage,
+  selectedMissing,
+  selectedDuplicates,
+  onCreateVisitor,
+  onCreateTradeRequest
+}: {
+  ownerName: string;
+  currentUser?: User;
+  isAuthenticated: boolean;
+  isSessionLoaded: boolean;
+  requestUrl: string;
+  baseRequestMessage: string;
+  selectedMissing: StickerModel[];
+  selectedDuplicates: Array<{ sticker: StickerModel; qty: number }>;
+  onCreateVisitor: (name: string) => User | null;
+  onCreateTradeRequest: (request: {
+    requester: User;
+    ownerName: string;
+    requestedStickerIds: string[];
+    offeredStickerIds: string[];
+  }) => TradeProcess;
+}) {
+  const [visitorName, setVisitorName] = useState(currentUser?.name ?? "");
+  const [requester, setRequester] = useState<User | undefined>(currentUser);
+  const [createdTradeId, setCreatedTradeId] = useState("");
+
+  useEffect(() => {
+    if (currentUser) {
+      setRequester(currentUser);
+      setVisitorName(currentUser.name);
+    }
+  }, [currentUser]);
+
+  const requestMessage = useMemo(() => {
+    const requesterLine = requester?.name ? `\n\nSolicitante: ${requester.name}` : "";
+    return `${baseRequestMessage}${requesterLine}`;
+  }, [baseRequestMessage, requester?.name]);
+
+  function handleCreateRequest() {
+    const nextRequester = currentUser ?? requester ?? onCreateVisitor(visitorName);
+    if (!nextRequester) return;
+    setRequester(nextRequester);
+    const trade = onCreateTradeRequest({
+      requester: nextRequester,
+      ownerName,
+      requestedStickerIds: selectedDuplicates.map(({ sticker }) => sticker.id),
+      offeredStickerIds: selectedMissing.map((sticker) => sticker.id)
+    });
+    setCreatedTradeId(trade.id);
+  }
+
+  const needsVisitorName = !isAuthenticated;
+  const canCreateRequest = selectedDuplicates.length + selectedMissing.length > 0 && (!needsVisitorName || visitorName.trim().length > 0);
+
+  return (
+    <section id="solicitud-intercambio" className="panel share-request-panel">
+      <div className="panel-header">
+        <div>
+          <h2>Solicitud de intercambio</h2>
+          <p>{selectedDuplicates.length} pedidas / {selectedMissing.length} ofrecidas</p>
+        </div>
+      </div>
+      <div className="share-request-content">
+        <div className="share-request-summary">
+          <div><strong>Quiero recibir</strong><span>{selectedDuplicates.map(({ sticker }) => sticker.reference).join(", ") || "Sin selección"}</span></div>
+          <div><strong>Puedo ofrecer</strong><span>{selectedMissing.map((sticker) => sticker.reference).join(", ") || "Sin selección"}</span></div>
+        </div>
+        <div className="share-request-identity">
+          {isAuthenticated && currentUser ? (
+            <div className="share-request-user">
+              <span className={`user-avatar ${currentUser.avatarUrl ? "has-image" : ""}`} style={currentUser.avatarUrl ? { backgroundImage: `url(${currentUser.avatarUrl})` } : undefined} aria-hidden="true">
+                {currentUser.avatarUrl ? null : currentUser.name.split(" ").map((part) => part[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "U"}
+              </span>
+              <div>
+                <strong>{currentUser.name}</strong>
+                <span>La solicitud se creará con tu usuario.</span>
+              </div>
+            </div>
+          ) : (
+            <label className="settings-label">
+              Tu nombre
+              <input
+                className="input"
+                value={visitorName}
+                onChange={(event) => setVisitorName(event.target.value)}
+                placeholder="Nombre de quien solicita el intercambio"
+              />
+              <span className="share-request-help">
+                Se creará un perfil visitante local para asociar esta solicitud.
+              </span>
+            </label>
+          )}
+        </div>
+        <label className="share-link-desc">
+          Enlace con la selección
+          <input className="input" value={requestUrl} readOnly />
+        </label>
+        <label className="share-link-desc">
+          Mensaje
+          <textarea className="share-textarea compact" value={requestMessage} readOnly />
+        </label>
+        <div className="share-request-actions">
+          <button className="button primary" disabled={!canCreateRequest || !isSessionLoaded} onClick={handleCreateRequest}>
+            {createdTradeId ? "Solicitud creada" : "Crear solicitud"}
+          </button>
+          <a className={`button ${createdTradeId ? "" : "disabled-link"}`} href={buildWhatsAppUrl(requestMessage)} target="_blank" rel="noreferrer" aria-disabled={!createdTradeId}>
+            <Share2 size={16} />
+            Compartir por WhatsApp
+          </a>
+        </div>
+        {createdTradeId ? <div className="backup-message">Solicitud creada y cargada a {requester?.name ?? "tu perfil"}.</div> : null}
+      </div>
+    </section>
   );
 }
 
@@ -1376,6 +1915,10 @@ function InventoryShareModal({
     [mode, user, missingStickers, duplicateStickers, currentState]
   );
   const url = useMemo(() => generateShareUrl(user, currentState), [user, currentState]);
+  const whatsappText = useMemo(
+    () => generateFullInventoryShareText(user, missingStickers, duplicateStickers, currentState, url),
+    [currentState, duplicateStickers, missingStickers, url, user]
+  );
 
   function handleCopy(content: string) {
     navigator.clipboard.writeText(content).catch(() => {});
@@ -1415,6 +1958,10 @@ function InventoryShareModal({
                 {copied ? "¡Copiado!" : "Copiar"}
               </button>
             </div>
+            <a className="button" href={buildWhatsAppUrl(whatsappText)} target="_blank" rel="noreferrer">
+              <Share2 size={16} />
+              Compartir por WhatsApp
+            </a>
           </div>
         )}
       </div>
