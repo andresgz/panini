@@ -47,6 +47,7 @@ type View = "dashboard" | "album" | "missing" | "duplicates" | "compare" | "sett
 type AlbumSortMode = "album" | "alphabetical";
 type AssistantMarkMode = "owned" | "missing";
 type TradeStatus = "requested" | "accepted" | "completed";
+type ShareMode = "missing" | "duplicates" | "request";
 
 type TradeProcess = {
   id: string;
@@ -417,6 +418,31 @@ function readCommaRefsParam(name: string) {
   const raw = new URLSearchParams(window.location.search).get(name);
   if (!raw) return [];
   return raw.split(",").map((ref) => ref.trim().toUpperCase()).filter(Boolean);
+}
+
+function getShareModeFromHash(hash: string): ShareMode | null {
+  switch (hash.replace(/^#/, "")) {
+    case "faltantes":
+      return "missing";
+    case "solicitud":
+    case "solicitud-intercambio":
+      return "request";
+    case "disponibles":
+      return "duplicates";
+    default:
+      return null;
+  }
+}
+
+function getHashForShareMode(mode: ShareMode) {
+  if (mode === "missing") return "faltantes";
+  if (mode === "request") return "solicitud-intercambio";
+  return "disponibles";
+}
+
+function withHash(url: string, hash: string) {
+  if (!url) return "";
+  return `${url.split("#")[0]}#${hash}`;
 }
 
 async function withTimeout<T>(operation: PromiseLike<T>, timeoutMs: number, message: string): Promise<T> {
@@ -1444,10 +1470,12 @@ function ShareReadView({
     offeredStickerIds: string[];
   }) => TradeProcess;
 }) {
+  const [activeShareMode, setActiveShareMode] = useState<ShareMode>("duplicates");
+  const [isShareUrlLoaded, setIsShareUrlLoaded] = useState(false);
   const [missingFilters, setMissingFilters] = useState<StickerFilters>({});
   const [duplicateFilters, setDuplicateFilters] = useState<StickerFilters>({});
-  const [selectedMissingRefs, setSelectedMissingRefs] = useState<Set<string>>(() => new Set(readCommaRefsParam("offer")));
-  const [selectedDuplicateRefs, setSelectedDuplicateRefs] = useState<Set<string>>(() => new Set(readCommaRefsParam("want")));
+  const [selectedMissingRefs, setSelectedMissingRefs] = useState<Set<string>>(new Set());
+  const [selectedDuplicateRefs, setSelectedDuplicateRefs] = useState<Set<string>>(new Set());
   const missingStickerObjects = useMemo(
     () => data.missing.map((ref) => allStickers.find((s) => s.reference === ref)).filter(Boolean) as StickerModel[],
     [data.missing]
@@ -1471,24 +1499,22 @@ function ShareReadView({
   }, [duplicateFilters, duplicateStickerObjects]);
 
   function groupBySection(stickers: StickerModel[]) {
-    const intro = stickers.filter((s) => s.sectionId === "intro");
-    const museum = stickers.filter((s) => s.sectionId === "museum");
+    const fwc = stickers.filter((s) => s.sectionId === "intro" || s.sectionId === "museum");
     const byCountry = paniniWorldCup2026Catalog.countries
       .map((country) => ({ country, stickers: stickers.filter((s) => s.countryCode === country.code) }))
       .filter((g) => g.stickers.length > 0);
-    return { intro, museum, byCountry };
+    return { fwc, byCountry };
   }
 
   function groupDuplicatesBySection(duplicates: Array<{ sticker: StickerModel; qty: number }>) {
-    const intro = duplicates.filter(({ sticker }) => sticker.sectionId === "intro");
-    const museum = duplicates.filter(({ sticker }) => sticker.sectionId === "museum");
+    const fwc = duplicates.filter(({ sticker }) => sticker.sectionId === "intro" || sticker.sectionId === "museum");
     const byCountry = paniniWorldCup2026Catalog.countries
       .map((country) => ({
         country,
         stickers: duplicates.filter(({ sticker }) => sticker.countryCode === country.code)
       }))
       .filter((group) => group.stickers.length > 0);
-    return { intro, museum, byCountry };
+    return { fwc, byCountry };
   }
 
   function updateDuplicateFilters(nextFilters: StickerFilters) {
@@ -1504,13 +1530,23 @@ function ShareReadView({
   const selectedCount = selectedMissing.length + selectedDuplicates.length;
   const requestedCount = selectedDuplicates.length;
   const offeredCount = selectedMissing.length;
+  const wizardSteps = [
+    { id: "duplicates", label: "Repetidas", count: duplicateStickerObjects.length, completed: requestedCount > 0 },
+    { id: "missing", label: "Faltantes", count: missingStickerObjects.length, completed: offeredCount > 0 },
+    { id: "request", label: "Solicitud", count: selectedCount, completed: selectedCount > 0 }
+  ] as const;
+  const currentWizardIndex = wizardSteps.findIndex((step) => step.id === activeShareMode);
+  const canGoPrevious = currentWizardIndex > 0;
+  const canGoNext = currentWizardIndex >= 0 && currentWizardIndex < wizardSteps.length - 1 && (
+    wizardSteps[currentWizardIndex + 1].id !== "request" || selectedCount > 0
+  );
   const baseShareUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
     if (data.userId) return `${window.location.origin}/?user=${encodeURIComponent(data.userId)}`;
     return `${window.location.origin}/?share=${encodeURIComponent(encodeSharePayload({ n: data.name, m: data.missing, d: data.duplicates }))}`;
   }, [data]);
-  const missingAnchorUrl = `${baseShareUrl}#faltantes`;
-  const duplicatesAnchorUrl = `${baseShareUrl}#disponibles`;
+  const missingAnchorUrl = withHash(baseShareUrl, "faltantes");
+  const duplicatesAnchorUrl = withHash(baseShareUrl, "disponibles");
   const requestUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
     const parts = data.userId
@@ -1522,6 +1558,8 @@ function ShareReadView({
     if (offerRefs.length > 0) parts.push(`offer=${offerRefs.join(",")}`);
     return `${window.location.origin}/?${parts.join("&")}`;
   }, [data, selectedDuplicateRefs, selectedMissingRefs]);
+  const activeShareUrl = withHash(selectedCount > 0 ? requestUrl : baseShareUrl, getHashForShareMode(activeShareMode));
+  const requestShareUrl = withHash(requestUrl, "solicitud-intercambio");
   const requestMessage = useMemo(() => {
     const lines = [`Hola ${data.name}, vi tu album Panini Mundial 2026 y quiero solicitar un intercambio.`];
     if (selectedDuplicates.length > 0) {
@@ -1530,14 +1568,36 @@ function ShareReadView({
     if (selectedMissing.length > 0) {
       lines.push(`Yo podria ayudarte con estas faltantes tuyas: ${selectedMissing.map((sticker) => sticker.reference).join(", ")}.`);
     }
-    lines.push(`Solicitud: ${requestUrl}`);
+    lines.push(`Solicitud: ${requestShareUrl}`);
     return lines.join("\n");
-  }, [data.name, requestUrl, selectedDuplicates, selectedMissing]);
+  }, [data.name, requestShareUrl, selectedDuplicates, selectedMissing]);
+
+  useEffect(() => {
+    const wantRefs = readCommaRefsParam("want");
+    const offerRefs = readCommaRefsParam("offer");
+    const hashMode = typeof window === "undefined" ? null : getShareModeFromHash(window.location.hash);
+    setSelectedDuplicateRefs(new Set(wantRefs));
+    setSelectedMissingRefs(new Set(offerRefs));
+    if (hashMode) setActiveShareMode(hashMode);
+    else if (wantRefs.length > 0 || offerRefs.length > 0) setActiveShareMode("request");
+    setIsShareUrlLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isShareUrlLoaded) return;
+    if (typeof window === "undefined") return;
+    window.history.replaceState(null, "", activeShareUrl);
+  }, [activeShareUrl, isShareUrlLoaded]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.history.replaceState(null, "", selectedCount > 0 ? requestUrl : baseShareUrl);
-  }, [baseShareUrl, requestUrl, selectedCount]);
+    function handleHashChange() {
+      const hashMode = getShareModeFromHash(window.location.hash);
+      if (hashMode) setActiveShareMode(hashMode);
+    }
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
 
   function toggleSelected(setter: Dispatch<SetStateAction<Set<string>>>, reference: string) {
     setter((previous) => {
@@ -1546,6 +1606,16 @@ function ShareReadView({
       else next.add(reference);
       return next;
     });
+  }
+
+  function goToPreviousWizardStep() {
+    if (!canGoPrevious) return;
+    setActiveShareMode(wizardSteps[currentWizardIndex - 1].id);
+  }
+
+  function goToNextWizardStep() {
+    if (!canGoNext) return;
+    setActiveShareMode(wizardSteps[currentWizardIndex + 1].id);
   }
 
   return (
@@ -1559,25 +1629,33 @@ function ShareReadView({
           </div>
         </header>
 
-        <div className="grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-          <Metric label="Faltantes" value={missingStickerObjects.length} />
-          <Metric label="Disp. para cambio" value={duplicateAvailableCount} />
-        </div>
-
-        <nav className="share-sticky-nav" aria-label="Navegacion del enlace publico">
-          <a href="#faltantes">
-            Faltantes
-            <span>{missingStickerObjects.length}</span>
-          </a>
-          <a href="#disponibles">
-            Disponibles
-            <span>{duplicateStickerObjects.length}</span>
-          </a>
+        <nav className="share-sticky-nav share-wizard-nav" aria-label="Pasos de solicitud de intercambio">
+          {wizardSteps.map((step, index) => (
+            <button
+              key={step.id}
+              className={[
+                activeShareMode === step.id ? "active" : "",
+                step.completed ? "completed" : ""
+              ].filter(Boolean).join(" ")}
+              disabled={step.id === "request" && selectedCount === 0}
+              onClick={() => setActiveShareMode(step.id)}
+            >
+              <span className="share-step-index">{index + 1}</span>
+              <span className="share-step-copy">
+                <strong>{step.label}</strong>
+                <small>{step.count}</small>
+              </span>
+            </button>
+          ))}
         </nav>
 
+        {activeShareMode === "missing" ? (
         <section id="faltantes" className="panel share-anchor-section">
           <div className="panel-header">
-            <h2>Faltantes</h2>
+            <div>
+              <h2>2. Selecciona lo que puedes ofrecer</h2>
+              <p>Estas son las faltantes de {data.name}. Marca las láminas que tú tienes y podrías incluir en el intercambio.</p>
+            </div>
             <div className="share-section-actions">
               <span className="badge">{selectedMissing.length}/{missingStickerObjects.length}</span>
               <a className="button small" href="#faltantes" onClick={() => navigator.clipboard.writeText(missingAnchorUrl).catch(() => {})}>
@@ -1589,18 +1667,17 @@ function ShareReadView({
           <ShareStickerFilterBar
             filters={missingFilters}
             onChange={setMissingFilters}
-            onReset={() => setMissingFilters({})}
           />
           <div className="share-filter-summary">
             <strong>{filteredMissingStickerObjects.length}</strong>
             <span>faltantes encontradas de {missingStickerObjects.length}</span>
           </div>
           <div className="share-group-list">
-            {missingGroups.intro.length > 0 ? (
+            {missingGroups.fwc.length > 0 ? (
               <ShareStickerGroup
-                title="Introduccion"
-                icon="🏆"
-                stickers={missingGroups.intro}
+                title="FWC"
+                icon="⭐"
+                stickers={missingGroups.fwc}
                 selectedRefs={selectedMissingRefs}
                 onToggle={(reference) => toggleSelected(setSelectedMissingRefs, reference)}
               />
@@ -1615,23 +1692,19 @@ function ShareReadView({
                 onToggle={(reference) => toggleSelected(setSelectedMissingRefs, reference)}
               />
             ))}
-            {missingGroups.museum.length > 0 ? (
-              <ShareStickerGroup
-                title="FIFA Museum"
-                icon="🏛️"
-                stickers={missingGroups.museum}
-                selectedRefs={selectedMissingRefs}
-                onToggle={(reference) => toggleSelected(setSelectedMissingRefs, reference)}
-              />
-            ) : null}
             {missingStickerObjects.length === 0 ? <div className="empty">¡Álbum completo!</div> : null}
             {missingStickerObjects.length > 0 && filteredMissingStickerObjects.length === 0 ? <div className="empty">No hay faltantes con esos filtros.</div> : null}
           </div>
         </section>
+        ) : null}
 
+        {activeShareMode === "duplicates" ? (
         <section id="disponibles" className="panel share-anchor-section">
           <div className="panel-header">
-            <h2>Disponibles para cambio</h2>
+            <div>
+              <h2>1. Elige las láminas que te sirven</h2>
+              <p>Estas son las repetidas de {data.name}. Selecciona las que quieres pedir para tu álbum.</p>
+            </div>
             <div className="share-section-actions">
               <span className="badge">{filteredDuplicateStickerObjects.length}/{duplicateStickerObjects.length}</span>
               <a className="button small" href="#disponibles" onClick={() => navigator.clipboard.writeText(duplicatesAnchorUrl).catch(() => {})}>
@@ -1644,7 +1717,6 @@ function ShareReadView({
           <ShareStickerFilterBar
             filters={duplicateFilters}
             onChange={updateDuplicateFilters}
-            onReset={() => setDuplicateFilters({})}
           />
 
           <div className="share-filter-summary">
@@ -1655,11 +1727,11 @@ function ShareReadView({
           <div className="share-group-list">
             {filteredDuplicateStickerObjects.length > 0 ? (
               <>
-                {duplicateGroups.intro.length > 0 ? (
+                {duplicateGroups.fwc.length > 0 ? (
                   <ShareDuplicateGroup
-                    title="Introduccion"
-                    icon="🏆"
-                    duplicates={duplicateGroups.intro}
+                    title="FWC"
+                    icon="⭐"
+                    duplicates={duplicateGroups.fwc}
                     selectedRefs={selectedDuplicateRefs}
                     onToggle={(reference) => toggleSelected(setSelectedDuplicateRefs, reference)}
                   />
@@ -1674,39 +1746,38 @@ function ShareReadView({
                     onToggle={(reference) => toggleSelected(setSelectedDuplicateRefs, reference)}
                   />
                 ))}
-                {duplicateGroups.museum.length > 0 ? (
-                  <ShareDuplicateGroup
-                    title="FIFA Museum"
-                    icon="🏛️"
-                    duplicates={duplicateGroups.museum}
-                    selectedRefs={selectedDuplicateRefs}
-                    onToggle={(reference) => toggleSelected(setSelectedDuplicateRefs, reference)}
-                  />
-                ) : null}
               </>
             ) : (
               <div className="empty">{duplicateStickerObjects.length > 0 ? "No hay disponibles con esos filtros." : "Sin repetidas disponibles."}</div>
             )}
           </div>
         </section>
+        ) : null}
 
         <div className="share-request-bar">
           <div>
             <strong>{requestedCount}</strong>
             <span>pedidas / {offeredCount} ofrecidas</span>
           </div>
-          <a className={`button primary ${selectedCount === 0 ? "disabled-link" : ""}`} href="#solicitud-intercambio" aria-disabled={selectedCount === 0}>
-            Solicitar Intercambio
-          </a>
+          <div className="share-wizard-actions">
+            <button className="button" disabled={!canGoPrevious} onClick={goToPreviousWizardStep}>
+              <ArrowLeft size={16} />
+              Anterior
+            </button>
+            <button className="button primary" disabled={!canGoNext} onClick={goToNextWizardStep}>
+              Siguiente
+              <ArrowRight size={16} />
+            </button>
+          </div>
         </div>
 
-        {selectedCount > 0 ? (
+        {activeShareMode === "request" && selectedCount > 0 ? (
           <TradeRequestPanel
             ownerName={data.name}
             currentUser={currentUser}
             isAuthenticated={isAuthenticated}
             isSessionLoaded={isSessionLoaded}
-            requestUrl={requestUrl}
+            requestUrl={requestShareUrl}
             baseRequestMessage={requestMessage}
             selectedMissing={selectedMissing}
             selectedDuplicates={selectedDuplicates}
@@ -1723,12 +1794,10 @@ function ShareReadView({
 
 function ShareStickerFilterBar({
   filters,
-  onChange,
-  onReset
+  onChange
 }: {
   filters: StickerFilters;
   onChange: (filters: StickerFilters) => void;
-  onReset: () => void;
 }) {
   return (
     <div className="share-filter-bar">
@@ -1741,32 +1810,6 @@ function ShareStickerFilterBar({
           onChange={(event) => onChange({ ...filters, query: event.target.value })}
         />
       </div>
-      <select className="select" value={filters.sectionId ?? "all"} onChange={(event) => onChange({ ...filters, sectionId: event.target.value })}>
-        <option value="all">Todas las secciones</option>
-        {paniniWorldCup2026Catalog.sections.map((section) => (
-          <option key={section.id} value={section.id}>{section.name}</option>
-        ))}
-      </select>
-      <select className="select" value={filters.countryCode ?? "all"} onChange={(event) => onChange({ ...filters, countryCode: event.target.value })}>
-        <option value="all">Todos los paises</option>
-        {paniniWorldCup2026Catalog.countries.map((country) => (
-          <option key={country.code} value={country.code}>{country.code} - {country.nameEs}</option>
-        ))}
-      </select>
-      <select className="select" value={filters.type ?? "all"} onChange={(event) => onChange({ ...filters, type: event.target.value as StickerFilters["type"] })}>
-        <option value="all">Todos los tipos</option>
-        {Object.entries(typeLabels).map(([type, label]) => (
-          <option key={type} value={type}>{label}</option>
-        ))}
-      </select>
-      <label className="toggle">
-        <input type="checkbox" checked={Boolean(filters.onlyFoil)} onChange={(event) => onChange({ ...filters, onlyFoil: event.target.checked })} />
-        Solo foil
-      </label>
-      <button className="button" onClick={onReset}>
-        <X size={16} />
-        Limpiar
-      </button>
     </div>
   );
 }
@@ -1776,38 +1819,46 @@ function ShareStickerGroup({
   icon,
   stickers,
   selectedRefs,
-  onToggle
+  onToggle,
+  defaultOpen = false
 }: {
   title: string;
   icon: string;
   stickers: StickerModel[];
   selectedRefs: Set<string>;
   onToggle: (reference: string) => void;
+  defaultOpen?: boolean;
 }) {
+  const selectedCount = stickers.filter((sticker) => selectedRefs.has(sticker.reference)).length;
+
   return (
-    <section className="share-duplicate-group">
-      <div className="share-duplicate-group-header">
+    <details className="share-accordion" open={defaultOpen}>
+      <summary className="share-accordion-header">
         <div className="share-group-title">
           <span className="share-group-icon" aria-hidden="true">{icon}</span>
           <strong>{title}</strong>
         </div>
-        <span>{stickers.length} refs</span>
-      </div>
-      <div className="share-duplicate-grid">
+        <span className="share-accordion-meta">{selectedCount}/{stickers.length}</span>
+        <ChevronDown className="share-accordion-chevron" size={18} />
+      </summary>
+      <div className="share-tile-grid">
         {stickers.map((sticker) => {
           const isSelected = selectedRefs.has(sticker.reference);
           return (
-            <button key={sticker.id} className={`share-duplicate-card selectable ${isSelected ? "selected" : ""}`} type="button" onClick={() => onToggle(sticker.reference)}>
-              <div>
-                <strong>{sticker.reference}</strong>
-                <span>{getStickerDisplayTitle(sticker)}</span>
-              </div>
-              {isSelected ? <span className="share-selection-check"><Check size={14} /></span> : null}
+            <button
+              key={sticker.id}
+              className={`share-sticker-tile ${isSelected ? "selected" : ""}`}
+              type="button"
+              title={`${sticker.reference} - ${getStickerDisplayTitle(sticker)}`}
+              onClick={() => onToggle(sticker.reference)}
+            >
+              <strong>{getPublicStickerTileLabel(sticker)}</strong>
+              {isSelected ? <span className="share-selection-check"><Check size={12} /></span> : null}
             </button>
           );
         })}
       </div>
-    </section>
+    </details>
   );
 }
 
@@ -1816,38 +1867,60 @@ function ShareDuplicateGroup({
   icon,
   duplicates,
   selectedRefs,
-  onToggle
+  onToggle,
+  defaultOpen = false
 }: {
   title: string;
   icon: string;
   duplicates: Array<{ sticker: StickerModel; qty: number }>;
   selectedRefs: Set<string>;
   onToggle: (reference: string) => void;
+  defaultOpen?: boolean;
 }) {
   const availableCount = duplicates.reduce((total, duplicate) => total + duplicate.qty, 0);
+  const selectedCount = duplicates.filter(({ sticker }) => selectedRefs.has(sticker.reference)).length;
 
   return (
-    <section className="share-duplicate-group">
-      <div className="share-duplicate-group-header">
+    <details className="share-accordion" open={defaultOpen}>
+      <summary className="share-accordion-header">
         <div className="share-group-title">
           <span className="share-group-icon" aria-hidden="true">{icon}</span>
           <strong>{title}</strong>
         </div>
-        <span>{duplicates.length} refs / {availableCount} disp.</span>
-      </div>
-      <div className="share-duplicate-grid">
+        <span className="share-accordion-meta">{selectedCount}/{duplicates.length}</span>
+        <span className="share-accordion-available">{availableCount} disp.</span>
+        <ChevronDown className="share-accordion-chevron" size={18} />
+      </summary>
+      <div className="share-tile-grid">
         {duplicates.map(({ sticker, qty }) => (
-          <button key={sticker.id} className={`share-duplicate-card selectable ${selectedRefs.has(sticker.reference) ? "selected" : ""}`} type="button" onClick={() => onToggle(sticker.reference)}>
-            <div>
-              <strong>{sticker.reference}</strong>
-              <span>{getStickerDisplayTitle(sticker)}</span>
-            </div>
+          <button
+            key={sticker.id}
+            className={`share-sticker-tile ${selectedRefs.has(sticker.reference) ? "selected" : ""}`}
+            type="button"
+            title={`${sticker.reference} - ${getStickerDisplayTitle(sticker)}`}
+            onClick={() => onToggle(sticker.reference)}
+          >
+            <strong>{getPublicStickerTileLabel(sticker)}</strong>
             <span className="share-duplicate-qty">x{qty}</span>
           </button>
         ))}
       </div>
-    </section>
+    </details>
   );
+}
+
+function getPublicStickerTileLabel(sticker: StickerModel) {
+  if (sticker.countryCode && sticker.reference.startsWith(sticker.countryCode)) {
+    return sticker.reference.slice(sticker.countryCode.length).replace(/^0+/, "") || sticker.reference;
+  }
+
+  if (sticker.reference === "000") return "00";
+
+  if (sticker.reference.startsWith("FWC")) {
+    return sticker.reference.slice(3).replace(/^0+/, "") || sticker.reference;
+  }
+
+  return sticker.reference;
 }
 
 function TradeRequestPanel({
@@ -2477,10 +2550,9 @@ function AlbumView({
 }) {
   const [sortMode, setSortMode] = useState<AlbumSortMode>(() => readSessionSortMode(albumSortSessionKey));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
-    () => new Set(paniniWorldCup2026Catalog.countries.map((country) => `country-${country.code}`))
+    () => new Set(["section-fwc", ...paniniWorldCup2026Catalog.countries.map((country) => `country-${country.code}`)])
   );
-  const intro = stickers.filter((sticker) => sticker.sectionId === "intro");
-  const museum = stickers.filter((sticker) => sticker.sectionId === "museum");
+  const fwc = stickers.filter((sticker) => sticker.sectionId === "intro" || sticker.sectionId === "museum");
   const sortedCountries = useMemo(() => {
     if (sortMode === "alphabetical") {
       return [...paniniWorldCup2026Catalog.countries].sort((a, b) => a.code.localeCompare(b.code, "es"));
@@ -2516,11 +2588,11 @@ function AlbumView({
     <div className="album-layout">
       {stickers.length === 0 ? <div className="empty">No hay laminas para mostrar con estos filtros.</div> : null}
       <StickerGroupAccordion
-        groupId="section-intro"
-        title="Introduccion"
-        stickers={intro}
+        groupId="section-fwc"
+        title="FWC"
+        stickers={fwc}
         userState={userState}
-        isCollapsed={collapsedGroups.has("section-intro")}
+        isCollapsed={collapsedGroups.has("section-fwc")}
         onToggle={toggleGroup}
         onSetAll={setGroupQuantity}
         onUpdateQuantity={onUpdateQuantity}
@@ -2555,23 +2627,12 @@ function AlbumView({
           />
         ))}
       </section>
-      <StickerGroupAccordion
-        groupId="section-museum"
-        title="FIFA Museum"
-        stickers={museum}
-        userState={userState}
-        isCollapsed={collapsedGroups.has("section-museum")}
-        onToggle={toggleGroup}
-        onSetAll={setGroupQuantity}
-        onUpdateQuantity={onUpdateQuantity}
-      />
     </div>
   );
 }
 
 function buildAssistantGroups(baseStickers: StickerModel[], sortMode: AlbumSortMode): AssistantGroup[] {
-  const intro = baseStickers.filter((sticker) => sticker.sectionId === "intro");
-  const museum = baseStickers.filter((sticker) => sticker.sectionId === "museum");
+  const fwc = baseStickers.filter((sticker) => sticker.sectionId === "intro" || sticker.sectionId === "museum");
   const countries =
     sortMode === "alphabetical"
       ? [...paniniWorldCup2026Catalog.countries].sort((a, b) => a.code.localeCompare(b.code, "es"))
@@ -2586,23 +2647,15 @@ function buildAssistantGroups(baseStickers: StickerModel[], sortMode: AlbumSortM
     .filter((group) => group.stickers.length > 0);
 
   return [
-    intro.length > 0
+    fwc.length > 0
       ? {
-          id: "section-intro",
-          label: "Introduccion",
-          image: "🏆",
-          stickers: intro
+          id: "section-fwc",
+          label: "FWC",
+          image: "⭐",
+          stickers: fwc
         }
       : null,
-    ...countryGroups,
-    museum.length > 0
-      ? {
-          id: "section-museum",
-          label: "FIFA Museum",
-          image: "🏛️",
-          stickers: museum
-        }
-      : null
+    ...countryGroups
   ].filter(Boolean) as AssistantGroup[];
 }
 
