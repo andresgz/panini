@@ -934,6 +934,7 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  align-items: start;
   min-width: 0;
 }
 
@@ -952,9 +953,11 @@ button:disabled {
 
 .share-selection-chips {
   display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  align-content: flex-start;
   min-width: 0;
   gap: 5px;
-  overflow-x: auto;
   padding-bottom: 2px;
 }
 
@@ -968,6 +971,7 @@ button:disabled {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
+  height: 28px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface-2);
