@@ -1755,19 +1755,43 @@ function ShareReadView({
         ) : null}
 
         <div className="share-request-bar">
-          <div>
-            <strong>{requestedCount}</strong>
-            <span>pedidas / {offeredCount} ofrecidas</span>
+          <div className="share-selection-status" aria-label="Láminas seleccionadas para intercambio">
+            <div className="share-selection-lane">
+              <span>Pides</span>
+              <div className="share-selection-chips">
+                {selectedDuplicates.length > 0 ? (
+                  selectedDuplicates.map(({ sticker }) => <span key={sticker.id} className="share-selection-chip">{sticker.reference}</span>)
+                ) : (
+                  <em>Ninguna</em>
+                )}
+              </div>
+            </div>
+            <div className="share-selection-lane">
+              <span>Ofreces</span>
+              <div className="share-selection-chips">
+                {selectedMissing.length > 0 ? (
+                  selectedMissing.map((sticker) => <span key={sticker.id} className="share-selection-chip">{sticker.reference}</span>)
+                ) : (
+                  <em>Ninguna</em>
+                )}
+              </div>
+            </div>
           </div>
-          <div className="share-wizard-actions">
-            <button className="button" disabled={!canGoPrevious} onClick={goToPreviousWizardStep}>
-              <ArrowLeft size={16} />
-              Anterior
-            </button>
-            <button className="button primary" disabled={!canGoNext} onClick={goToNextWizardStep}>
-              Siguiente
-              <ArrowRight size={16} />
-            </button>
+          <div className="share-request-footer">
+            <div className="share-request-totals">
+              <strong>{requestedCount}</strong>
+              <span>pedidas / {offeredCount} ofrecidas</span>
+            </div>
+            <div className="share-wizard-actions">
+              <button className="button" disabled={!canGoPrevious} onClick={goToPreviousWizardStep}>
+                <ArrowLeft size={16} />
+                Anterior
+              </button>
+              <button className="button primary" disabled={!canGoNext} onClick={goToNextWizardStep}>
+                Siguiente
+                <ArrowRight size={16} />
+              </button>
+            </div>
           </div>
         </div>
 
