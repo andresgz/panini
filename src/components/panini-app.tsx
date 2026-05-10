@@ -45,6 +45,7 @@ import type { Sticker as StickerModel, StickerFilters, StickerType, User, UserSt
 
 type View = "dashboard" | "album" | "missing" | "duplicates" | "compare" | "settings";
 type AlbumSortMode = "album" | "alphabetical";
+type AlbumViewMode = "cards" | "fullscreen";
 type AssistantMarkMode = "owned" | "missing";
 type TradeStatus = "requested" | "accepted" | "completed";
 type ShareMode = "missing" | "duplicates" | "request";
@@ -1139,6 +1140,7 @@ export function PaniniApp() {
           <AlbumView
             stickers={filteredStickers}
             userState={currentState}
+            onResetFilters={resetFilters}
             onUpdateQuantity={updateQuantity}
             onUpdateQuantities={updateQuantities}
           />
@@ -1156,6 +1158,7 @@ export function PaniniApp() {
             <AlbumView
               stickers={missingStickers}
               userState={currentState}
+              onResetFilters={resetFilters}
               onUpdateQuantity={updateQuantity}
               onUpdateQuantities={updateQuantities}
             />
@@ -1174,6 +1177,7 @@ export function PaniniApp() {
             <AlbumView
               stickers={duplicateStickers}
               userState={currentState}
+              onResetFilters={resetFilters}
               onUpdateQuantity={updateQuantity}
               onUpdateQuantities={updateQuantities}
             />
@@ -2561,21 +2565,40 @@ function ProgressBar({ value }: { value: number }) {
   );
 }
 
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null;
+  if (!element) return false;
+  if (element.isContentEditable) return true;
+  return element.tagName === "INPUT" || element.tagName === "SELECT" || element.tagName === "TEXTAREA";
+}
+
+function scrollElementIntoView(selector: string) {
+  window.setTimeout(() => {
+    document.querySelector(selector)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, 0);
+}
+
 function AlbumView({
   stickers,
   userState,
+  onResetFilters,
   onUpdateQuantity,
   onUpdateQuantities
 }: {
   stickers: StickerModel[];
   userState: UserStateMap;
+  onResetFilters: () => void;
   onUpdateQuantity: (stickerId: string, quantity: number) => void;
   onUpdateQuantities: (updates: Array<{ stickerId: string; quantity: number }>) => void;
 }) {
   const [sortMode, setSortMode] = useState<AlbumSortMode>(() => readSessionSortMode(albumSortSessionKey));
+  const [viewMode, setViewMode] = useState<AlbumViewMode>("cards");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     () => new Set(["section-fwc", ...paniniWorldCup2026Catalog.countries.map((country) => `country-${country.code}`)])
   );
+  const [keyboardFilter, setKeyboardFilter] = useState("");
+  const [activeGroupId, setActiveGroupId] = useState("");
+  const [activeStickerId, setActiveStickerId] = useState("");
   const fwc = stickers.filter((sticker) => sticker.sectionId === "intro" || sticker.sectionId === "museum");
   const sortedCountries = useMemo(() => {
     if (sortMode === "alphabetical") {
@@ -2595,6 +2618,20 @@ function AlbumView({
       stickers: stickers.filter((sticker) => sticker.countryCode === country.code)
     }))
     .filter((group) => group.stickers.length > 0);
+  const groups = useMemo(
+    () => [
+      { id: "section-fwc", code: "FWC", title: "FWC", stickers: fwc },
+      ...byCountry.map((group) => ({
+        id: `country-${group.country.code}`,
+        code: group.country.code,
+        title: `${group.country.code} - ${group.country.nameEs}`,
+        stickers: group.stickers
+      }))
+    ].filter((group) => group.stickers.length > 0),
+    [byCountry, fwc]
+  );
+  const activeSticker = activeStickerId ? stickers.find((sticker) => sticker.id === activeStickerId) : undefined;
+
   function toggleGroup(groupId: string) {
     setCollapsedGroups((previous) => {
       const next = new Set(previous);
@@ -2608,49 +2645,189 @@ function AlbumView({
     onUpdateQuantities(groupStickers.map((sticker) => ({ stickerId: sticker.id, quantity })));
   }
 
+  const openOnlyGroup = useCallback((groupId: string) => {
+    const group = groups.find((item) => item.id === groupId);
+    if (!group) return;
+
+    setActiveGroupId(groupId);
+    setCollapsedGroups(new Set(groups.filter((item) => item.id !== groupId).map((item) => item.id)));
+    scrollElementIntoView(`[data-testid="album-group-${groupId}"]`);
+  }, [groups]);
+
+  const selectSticker = useCallback((sticker: StickerModel) => {
+    const groupId = sticker.countryCode ? `country-${sticker.countryCode}` : "section-fwc";
+    openOnlyGroup(groupId);
+    setActiveStickerId(sticker.id);
+    scrollElementIntoView(`[data-testid="album-card-${sticker.reference}"]`);
+  }, [openOnlyGroup]);
+
+  const findStickerByTypedNumber = useCallback((value: string) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return undefined;
+    const searchGroups = activeGroupId
+      ? groups.filter((group) => group.id === activeGroupId)
+      : groups.filter((group) => !collapsedGroups.has(group.id));
+    const groupCandidates = searchGroups.length > 0 ? searchGroups : groups;
+
+    for (const group of groupCandidates) {
+      const found = group.stickers.find((sticker) => sticker.number === number || sticker.reference === value.padStart(3, "0"));
+      if (found) return found;
+    }
+
+    const padded = value.padStart(3, "0");
+    return stickers.find((sticker) => sticker.reference === padded || sticker.reference.endsWith(padded));
+  }, [activeGroupId, collapsedGroups, groups, stickers]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (isEditableKeyboardTarget(event.target)) return;
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setKeyboardFilter("");
+        setActiveStickerId("");
+        setActiveGroupId("");
+        onResetFilters();
+        setCollapsedGroups(new Set(groups.map((group) => group.id)));
+        return;
+      }
+
+      if (event.key === " ") {
+        if (!activeSticker) return;
+        event.preventDefault();
+        onUpdateQuantity(activeSticker.id, getQuantity(userState, activeSticker.id) + 1);
+        return;
+      }
+
+      if (event.key === "Delete") {
+        if (!activeSticker) return;
+        event.preventDefault();
+        onUpdateQuantity(activeSticker.id, getQuantity(userState, activeSticker.id) - 1);
+        return;
+      }
+
+      if (event.key === "Backspace") {
+        if (!keyboardFilter) return;
+        event.preventDefault();
+        setKeyboardFilter((previous) => previous.slice(0, -1));
+        return;
+      }
+
+      if (event.key === "Enter") {
+        const filter = keyboardFilter.trim().toUpperCase();
+        if (!filter) return;
+        event.preventDefault();
+
+        if (/^[A-Z]{3}$/.test(filter)) {
+          const group = groups.find((item) => item.code === filter);
+          if (group) {
+            openOnlyGroup(group.id);
+            setActiveStickerId(group.stickers[0]?.id ?? "");
+            setKeyboardFilter("");
+          }
+          return;
+        }
+
+        if (/^\d{1,3}$/.test(filter)) {
+          const sticker = findStickerByTypedNumber(filter);
+          if (sticker) {
+            selectSticker(sticker);
+            setKeyboardFilter("");
+          }
+        }
+        return;
+      }
+
+      if (event.key.length === 1 && /^[a-zA-Z0-9]$/.test(event.key)) {
+        event.preventDefault();
+        setKeyboardFilter((previous) => `${previous}${event.key.toUpperCase()}`.slice(-3));
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeSticker, findStickerByTypedNumber, groups, keyboardFilter, onResetFilters, onUpdateQuantity, openOnlyGroup, selectSticker, userState]);
+
   return (
-    <div className="album-layout">
-      {stickers.length === 0 ? <div className="empty">No hay laminas para mostrar con estos filtros.</div> : null}
-      <StickerGroupAccordion
-        groupId="section-fwc"
-        title="FWC"
-        stickers={fwc}
-        userState={userState}
-        isCollapsed={collapsedGroups.has("section-fwc")}
-        onToggle={toggleGroup}
-        onSetAll={setGroupQuantity}
-        onUpdateQuantity={onUpdateQuantity}
-      />
-      <section className="section-band">
-        <div className="section-title album-section-title">
-          <h2>Selecciones</h2>
-          <div className="section-controls">
-            <select
-              className="select compact-select"
-              value={sortMode}
-              onChange={(event) => setSortMode(event.target.value as AlbumSortMode)}
-              aria-label="Orden de selecciones"
-            >
-              <option value="album">Orden del album</option>
-              <option value="alphabetical">Orden alfabetico</option>
-            </select>
-            <span className="badge">{byCountry.reduce((total, group) => total + group.stickers.length, 0)} laminas</span>
-          </div>
+    <div className={`album-layout ${viewMode === "fullscreen" ? "fullscreen-map-mode" : ""}`}>
+      <div className="keyboard-filter-bar" aria-live="polite">
+        <div>
+          <span>Filtro teclado</span>
+          <strong>{keyboardFilter || "Listo"}</strong>
         </div>
-        {byCountry.map((group) => (
+        <div>
+          <span>Ubicacion</span>
+          <strong>{activeSticker ? activeSticker.reference : activeGroupId ? groups.find((group) => group.id === activeGroupId)?.title : "Sin seleccion"}</strong>
+        </div>
+        <label className="album-view-mode">
+          <span>Vista</span>
+          <select className="select compact-select" value={viewMode} onChange={(event) => setViewMode(event.target.value as AlbumViewMode)}>
+            <option value="cards">Tarjetas</option>
+            <option value="fullscreen">Full screen</option>
+          </select>
+        </label>
+        <div className="keyboard-filter-actions">
+          <kbd>ABC</kbd><span>Enter</span>
+          <kbd>123</kbd><span>Enter</span>
+          <kbd>Space</kbd><span>+1</span>
+          <kbd>Del</kbd><span>-1</span>
+          <kbd>Esc</kbd><span>Reset</span>
+        </div>
+      </div>
+      {stickers.length === 0 ? <div className="empty">No hay laminas para mostrar con estos filtros.</div> : null}
+      {viewMode === "fullscreen" ? (
+        <AlbumFullscreenMap
+          groups={groups}
+          userState={userState}
+          activeStickerId={activeStickerId}
+          onSelectSticker={selectSticker}
+        />
+      ) : (
+        <>
           <StickerGroupAccordion
-            key={group.country.code}
-            groupId={`country-${group.country.code}`}
-            title={`${group.country.code} - ${group.country.nameEs}`}
-            stickers={group.stickers}
+            groupId="section-fwc"
+            title="FWC"
+            stickers={fwc}
             userState={userState}
-            isCollapsed={collapsedGroups.has(`country-${group.country.code}`)}
+            isCollapsed={collapsedGroups.has("section-fwc")}
+            activeStickerId={activeStickerId}
             onToggle={toggleGroup}
             onSetAll={setGroupQuantity}
             onUpdateQuantity={onUpdateQuantity}
           />
-        ))}
-      </section>
+          <section className="section-band">
+            <div className="section-title album-section-title">
+              <h2>Selecciones</h2>
+              <div className="section-controls">
+                <select
+                  className="select compact-select"
+                  value={sortMode}
+                  onChange={(event) => setSortMode(event.target.value as AlbumSortMode)}
+                  aria-label="Orden de selecciones"
+                >
+                  <option value="album">Orden del album</option>
+                  <option value="alphabetical">Orden alfabetico</option>
+                </select>
+                <span className="badge">{byCountry.reduce((total, group) => total + group.stickers.length, 0)} laminas</span>
+              </div>
+            </div>
+            {byCountry.map((group) => (
+              <StickerGroupAccordion
+                key={group.country.code}
+                groupId={`country-${group.country.code}`}
+                title={`${group.country.code} - ${group.country.nameEs}`}
+                stickers={group.stickers}
+                userState={userState}
+                isCollapsed={collapsedGroups.has(`country-${group.country.code}`)}
+                activeStickerId={activeStickerId}
+                onToggle={toggleGroup}
+                onSetAll={setGroupQuantity}
+                onUpdateQuantity={onUpdateQuantity}
+              />
+            ))}
+          </section>
+        </>
+      )}
     </div>
   );
 }
@@ -3008,12 +3185,63 @@ function getGroupSummary(stickers: StickerModel[], userState: UserStateMap) {
   };
 }
 
+function AlbumFullscreenMap({
+  groups,
+  userState,
+  activeStickerId,
+  onSelectSticker
+}: {
+  groups: Array<{ id: string; code: string; title: string; stickers: StickerModel[] }>;
+  userState: UserStateMap;
+  activeStickerId: string;
+  onSelectSticker: (sticker: StickerModel) => void;
+}) {
+  return (
+    <div className="album-map-grid" aria-label="Mapa compacto del album">
+      {groups.map((group) => {
+        const summary = getGroupSummary(group.stickers, userState);
+        return (
+          <section key={group.id} className="album-map-section" data-testid={`album-group-${group.id}`}>
+            <header className="album-map-header">
+              <strong>{group.code}</strong>
+              <span>{summary.owned}/{summary.total}</span>
+            </header>
+            <div className="album-map-stickers">
+              {group.stickers.map((sticker) => {
+                const quantity = getQuantity(userState, sticker.id);
+                const status = getStickerStatus(quantity);
+                const isActive = sticker.id === activeStickerId;
+
+                return (
+                  <button
+                    key={sticker.id}
+                    className={`album-map-sticker ${status} ${isActive ? "keyboard-active" : ""}`}
+                    type="button"
+                    data-testid={`album-card-${sticker.reference}`}
+                    aria-current={isActive ? "true" : undefined}
+                    aria-label={`${sticker.reference}, ${statusLabels[status]}, cantidad ${quantity}`}
+                    title={`${sticker.reference} - ${getStickerDisplayTitle(sticker)} (${quantity})`}
+                    onClick={() => onSelectSticker(sticker)}
+                  >
+                    {getPublicStickerTileLabel(sticker)}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 function StickerGroupAccordion({
   groupId,
   title,
   stickers,
   userState,
   isCollapsed,
+  activeStickerId,
   onToggle,
   onSetAll,
   onUpdateQuantity
@@ -3023,6 +3251,7 @@ function StickerGroupAccordion({
   stickers: StickerModel[];
   userState: UserStateMap;
   isCollapsed: boolean;
+  activeStickerId: string;
   onToggle: (groupId: string) => void;
   onSetAll: (stickers: StickerModel[], quantity: number) => void;
   onUpdateQuantity: (stickerId: string, quantity: number) => void;
@@ -3060,7 +3289,13 @@ function StickerGroupAccordion({
       ) : (
         <div className="sticker-grid" id={`${groupId}-content`}>
           {stickers.map((sticker) => (
-            <StickerCard key={sticker.id} sticker={sticker} quantity={getQuantity(userState, sticker.id)} onUpdateQuantity={onUpdateQuantity} />
+            <StickerCard
+              key={sticker.id}
+              sticker={sticker}
+              quantity={getQuantity(userState, sticker.id)}
+              isKeyboardActive={sticker.id === activeStickerId}
+              onUpdateQuantity={onUpdateQuantity}
+            />
           ))}
         </div>
       )}
@@ -3082,10 +3317,12 @@ function GroupSummary({ summary }: { summary: ReturnType<typeof getGroupSummary>
 function StickerCard({
   sticker,
   quantity,
+  isKeyboardActive = false,
   onUpdateQuantity
 }: {
   sticker: StickerModel;
   quantity: number;
+  isKeyboardActive?: boolean;
   onUpdateQuantity: (stickerId: string, quantity: number) => void;
 }) {
   const status = getStickerStatus(quantity);
@@ -3094,10 +3331,11 @@ function StickerCard({
 
   return (
     <article
-      className={`sticker-card ${status}`}
+      className={`sticker-card ${status} ${isKeyboardActive ? "keyboard-active" : ""}`}
       data-testid={`album-card-${sticker.reference}`}
       role="button"
       tabIndex={0}
+      aria-current={isKeyboardActive ? "true" : undefined}
       aria-label={`${sticker.reference}, ${statusLabels[status]}, cantidad ${quantity}. Click para agregar una copia.`}
       onClick={incrementQuantity}
       onKeyDown={(event) => {

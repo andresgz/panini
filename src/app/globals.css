@@ -1464,6 +1464,83 @@ button:disabled {
   gap: 18px;
 }
 
+.album-layout.fullscreen-map-mode {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  overflow: auto;
+  gap: 8px;
+  background: var(--bg);
+  padding: 8px;
+}
+
+.keyboard-filter-bar {
+  position: sticky;
+  top: 105px;
+  z-index: 6;
+  display: grid;
+  grid-template-columns: minmax(110px, 0.22fr) minmax(130px, 0.26fr) minmax(160px, 0.26fr) minmax(280px, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 24px rgba(0, 30, 104, 0.1);
+  padding: 10px 12px;
+}
+
+.fullscreen-map-mode .keyboard-filter-bar {
+  top: 0;
+  z-index: 42;
+  padding: 8px 10px;
+}
+
+.keyboard-filter-bar div {
+  min-width: 0;
+}
+
+.album-view-mode {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.keyboard-filter-bar span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.keyboard-filter-bar strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 2px;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.keyboard-filter-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.keyboard-filter-actions kbd {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--ink);
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .album-tools {
   display: flex;
   gap: 12px;
@@ -1518,6 +1595,86 @@ button:disabled {
 .compact-select {
   width: auto;
   min-width: 180px;
+}
+
+.album-map-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+  gap: 6px;
+  align-items: start;
+}
+
+.album-map-section {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 5px;
+}
+
+.album-map-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 18px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.album-map-header strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.album-map-stickers {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.album-map-sticker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 18px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--ink);
+  padding: 0;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.album-map-sticker.missing {
+  border-color: #e1c4c8;
+  background: #f8edef;
+  color: var(--red);
+}
+
+.album-map-sticker.owned {
+  border-color: #b7d4c4;
+  background: #eaf6ef;
+  color: var(--green);
+}
+
+.album-map-sticker.duplicate {
+  border-color: #dfc99a;
+  background: #fbf0d9;
+  color: var(--amber);
+}
+
+.album-map-sticker.keyboard-active {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(0, 30, 104, 0.22);
 }
 
 .sticker-grid {
@@ -1630,6 +1787,11 @@ button:disabled {
 
 .sticker-card:focus-visible {
   box-shadow: 0 0 0 3px rgba(23, 114, 69, 0.18);
+}
+
+.sticker-card.keyboard-active {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(0, 30, 104, 0.16), 0 10px 24px rgba(0, 30, 104, 0.12);
 }
 
 .sticker-card.missing {
@@ -2364,6 +2526,16 @@ button:disabled {
     display: grid;
   }
 
+  .keyboard-filter-bar {
+    top: 142px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .keyboard-filter-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
   .sticker-grid {
     grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   }
@@ -2469,6 +2641,15 @@ button:disabled {
 
   .toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .keyboard-filter-bar {
+    position: static;
+    grid-template-columns: 1fr;
+  }
+
+  .keyboard-filter-actions {
+    gap: 5px;
   }
 
   .filter-search {
